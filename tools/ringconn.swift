@@ -117,10 +117,16 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var onTapCmd: String? = nil
     var onDoubleTapCmd: String? = nil
     var onFlickCmd: String? = nil
-    var gBaseline: Double = 1.0
+    var gInit = false
+    var gGravX = 0.0, gGravY = 0.0, gGravZ = 1.0
+    var gPrevX = 0.0, gPrevY = 0.0, gPrevZ = 1.0
     var gSampleIdx = 0
-    var gLastImpulse = -100
-    var gPendingTap: Int? = nil
+    var gInBurst = false
+    var gBurstSamples = 0
+    var gBurstPeakG = 0.0
+    var gBurstPeakSample = -100
+    var gLastTapPeak = -100
+    var gPendingTap: (peakG: Double, sample: Int)? = nil
 
     var histCh = 0
     var pages = 0
@@ -315,28 +321,62 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func processAccGestures(_ b: [UInt8]) {
         guard b.count >= 156 else { return }
+        let tapThresh = 0.34
+        let flickThresh = 1.15
         for s in 0..<25 {
             let off = 6 + s * 6
-            let x = Double(Int16(bitPattern: (UInt16(b[off]) << 8) | UInt16(b[off + 1]))) / 1024.0
-            let y = Double(Int16(bitPattern: (UInt16(b[off + 2]) << 8) | UInt16(b[off + 3]))) / 1024.0
-            let z = Double(Int16(bitPattern: (UInt16(b[off + 4]) << 8) | UInt16(b[off + 5]))) / 1024.0
-            let magG = sqrt(x * x + y * y + z * z)
-            let dyn = abs(magG - gBaseline)
-            if dyn < 0.25 { gBaseline = gBaseline * 0.92 + magG * 0.08 }
-            if dyn >= 0.55 && (gSampleIdx - gLastImpulse) >= 5 {
-                gLastImpulse = gSampleIdx
-                if dyn >= 1.25 {
+            let ax = Double(Int16(bitPattern: (UInt16(b[off]) << 8) | UInt16(b[off + 1]))) / 1024.0
+            let ay = Double(Int16(bitPattern: (UInt16(b[off + 2]) << 8) | UInt16(b[off + 3]))) / 1024.0
+            let az = Double(Int16(bitPattern: (UInt16(b[off + 4]) << 8) | UInt16(b[off + 5]))) / 1024.0
+            if !gInit {
+                gInit = true
+                gGravX = ax; gGravY = ay; gGravZ = az
+                gPrevX = ax; gPrevY = ay; gPrevZ = az
+            }
+            let dx = ax - gGravX, dy = ay - gGravY, dz = az - gGravZ
+            let linG = sqrt(dx * dx + dy * dy + dz * dz)
+            let jx = ax - gPrevX, jy = ay - gPrevY, jz = az - gPrevZ
+            let jerkG = sqrt(jx * jx + jy * jy + jz * jz)
+            let impulseG = 0.45 * linG + 0.55 * jerkG
+            let alpha = linG < 0.25 ? 0.14 : 0.03
+            gGravX += alpha * dx; gGravY += alpha * dy; gGravZ += alpha * dz
+            gPrevX = ax; gPrevY = ay; gPrevZ = az
+
+            if !gInBurst {
+                if impulseG >= tapThresh {
+                    gInBurst = true
+                    gBurstSamples = 1
+                    gBurstPeakG = impulseG
+                    gBurstPeakSample = gSampleIdx
+                }
+            } else if impulseG >= tapThresh * 0.65 && gBurstSamples < 12 {
+                gBurstSamples += 1
+                if impulseG > gBurstPeakG {
+                    gBurstPeakG = impulseG
+                    gBurstPeakSample = gSampleIdx
+                }
+            } else {
+                gInBurst = false
+                let isFlick = gBurstPeakG >= flickThresh ||
+                    (gBurstSamples > 5 && gBurstPeakG >= tapThresh * 1.4)
+                if isFlick {
                     gPendingTap = nil
-                    runGestureHook(onFlickCmd, label: "flick", peakG: magG)
-                } else if let prev = gPendingTap, (gSampleIdx - prev) <= 18 {
-                    gPendingTap = nil
-                    runGestureHook(onDoubleTapCmd, label: "double-tap", peakG: magG)
-                } else {
-                    gPendingTap = gSampleIdx
-                    runGestureHook(onTapCmd, label: "tap", peakG: magG)
+                    gLastTapPeak = gBurstPeakSample
+                    runGestureHook(onFlickCmd, label: "flick", peakG: gBurstPeakG)
+                } else if gBurstSamples <= 5 && (gBurstPeakSample - gLastTapPeak) >= 3 {
+                    gLastTapPeak = gBurstPeakSample
+                    if let prev = gPendingTap, (gBurstPeakSample - prev.sample) <= 22 {
+                        gPendingTap = nil
+                        runGestureHook(onDoubleTapCmd, label: "double-tap", peakG: gBurstPeakG)
+                    } else {
+                        gPendingTap = (gBurstPeakG, gBurstPeakSample)
+                    }
                 }
             }
-            if let prev = gPendingTap, (gSampleIdx - prev) > 18 { gPendingTap = nil }
+            if !gInBurst, let prev = gPendingTap, (gSampleIdx - prev.sample) > 22 {
+                gPendingTap = nil
+                runGestureHook(onTapCmd, label: "tap", peakG: prev.peakG)
+            }
             gSampleIdx += 1
         }
     }

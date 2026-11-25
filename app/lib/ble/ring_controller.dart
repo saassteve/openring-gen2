@@ -8,6 +8,7 @@ import 'package:flutter/services.dart' show PlatformException;
 import 'package:path_provider/path_provider.dart';
 import 'package:ring_protocol/ring_protocol.dart';
 
+import '../data/gesture_actions.dart';
 import '../data/health_exporter.dart';
 import '../data/ring_database.dart';
 import 'command_console.dart';
@@ -30,7 +31,14 @@ final class RingController extends ChangeNotifier {
     this.database, {
     this._ble = const RingBle(),
     HealthExporter? healthExporter,
-  }) : healthExporter = healthExporter ?? HealthExporter(database) {
+    DeviceActionChannel? deviceActions,
+  }) : healthExporter = healthExporter ?? HealthExporter(database),
+       deviceActions = deviceActions ?? DeviceActionChannel() {
+    this.deviceActions.setStopFromNotificationHandler(() async {
+      if (accStreaming) {
+        await setAccelerometer(false);
+      }
+    });
     _subscription = _ble.events.listen(
       _event,
       onError: (Object error) {
@@ -40,15 +48,23 @@ final class RingController extends ChangeNotifier {
     unawaited(
       _enqueue(() async {
         autoHealthExport = await database.getAutoHealthExport();
+        gestureConfig = GestureActionConfig.decode(
+          await database.getPreference(_gestureConfigKey),
+        );
+        gestureDetector.sensitivity = gestureConfig.sensitivity;
+        accessibilityEnabled = await this.deviceActions.isAccessibilityEnabled();
         final last = await database.latestDevice();
         if (last != null) _loadDevice(last.id, last.name, last.firmware);
       }),
     );
   }
 
+  static const _gestureConfigKey = 'gesture_action_config';
+
   final RingDatabase database;
   final RingBle _ble;
   final HealthExporter healthExporter;
+  final DeviceActionChannel deviceActions;
   final FrameReassembler _parser = FrameReassembler();
   final Map<String, NearbyRing> _nearby = {};
   final List<HeartRatePoint> _heartRate = [];
@@ -90,7 +106,60 @@ final class RingController extends ChangeNotifier {
   final PpgBiofeedbackAnalyzer ppgAnalyzer = PpgBiofeedbackAnalyzer();
   final GestureDetector3D gestureDetector = GestureDetector3D();
   bool accStreaming = false;
+  GestureActionConfig gestureConfig = const GestureActionConfig();
+  bool accessibilityEnabled = false;
+  String? lastGestureActionDetail;
+  DateTime? lastGestureActionAt;
   TemperatureReply? sensorTemperature;
+
+  Future<void> updateGestureConfig(GestureActionConfig next) async {
+    gestureConfig = next;
+    gestureDetector.sensitivity = next.sensitivity;
+    await database.setPreference(_gestureConfigKey, next.encode());
+    if (accStreaming) {
+      await deviceActions.setBackgroundService(
+        active: next.backgroundService && next.actionsEnabled,
+        summary: next.notificationSummary,
+      );
+    }
+    _publish();
+  }
+
+  Future<void> refreshAccessibilityStatus() async {
+    accessibilityEnabled = await deviceActions.isAccessibilityEnabled();
+    _publish();
+  }
+
+  Future<void> openAccessibilitySettings() async {
+    await deviceActions.openAccessibilitySettings();
+  }
+
+  Future<void> testGestureAction(RingGesture gesture) async {
+    await _dispatchGestureAction(
+      (gesture: gesture, peakG: 0.65, sampleIndex: 0),
+      force: true,
+    );
+  }
+
+  Future<void> _dispatchGestureAction(
+    GestureEvent event, {
+    bool force = false,
+  }) async {
+    if (!force && !gestureConfig.actionsEnabled) return;
+    final action = gestureConfig.actionFor(event.gesture);
+    if (action == RingDeviceAction.none) return;
+    final outcome = await deviceActions.performAction(
+      action: action,
+      gesture: event.gesture,
+      peakG: event.peakG,
+      haptic: gestureConfig.hapticFeedback,
+      webhookUrl: gestureConfig.webhookUrl,
+    );
+    lastGestureActionAt = DateTime.now();
+    lastGestureActionDetail =
+        '${event.gesture.label} (${event.peakG.toStringAsFixed(2)} g) → ${outcome.detail}';
+    _publish();
+  }
   bool autoHealthExport = true;
   bool healthExporting = false;
   String? healthExportStatus;
@@ -316,11 +385,19 @@ final class RingController extends ChangeNotifier {
         mode = RingMode.idle;
       }
       gestureDetector.reset();
+      gestureDetector.sensitivity = gestureConfig.sensitivity;
       await _send(RingCommands.startAccelerometer());
       accStreaming = true;
+      if (gestureConfig.backgroundService && gestureConfig.actionsEnabled) {
+        await deviceActions.setBackgroundService(
+          active: true,
+          summary: gestureConfig.notificationSummary,
+        );
+      }
     } else {
       await _send(RingCommands.mode(RingMode.idle));
       accStreaming = false;
+      await deviceActions.setBackgroundService(active: false, summary: '');
       await _send(RingCommands.telemetry());
       _startPolling();
     }
@@ -336,6 +413,7 @@ final class RingController extends ChangeNotifier {
     await _send(RingCommands.mode(RingMode.idle));
     mode = RingMode.idle;
     accStreaming = false;
+    await deviceActions.setBackgroundService(active: false, summary: '');
     await _send(RingCommands.telemetry());
     _startPolling();
   });
@@ -564,6 +642,9 @@ final class RingController extends ChangeNotifier {
           if (connected && !frame.accepted) {
             message = 'The ring rejected the accelerometer command.';
             accStreaming = false;
+            unawaited(
+              deviceActions.setBackgroundService(active: false, summary: ''),
+            );
             _startPolling();
           }
         case TemperatureReply():
@@ -571,7 +652,10 @@ final class RingController extends ChangeNotifier {
         case DensePpgFrame():
           ppgAnalyzer.addFrame(frame);
         case RawPpgFrame():
-          gestureDetector.addFrame(frame);
+          final events = gestureDetector.addFrame(frame);
+          for (final event in events) {
+            unawaited(_dispatchGestureAction(event));
+          }
       }
     }
   }
@@ -787,6 +871,7 @@ final class RingController extends ChangeNotifier {
     bond = null;
     mode = RingMode.idle;
     accStreaming = false;
+    unawaited(deviceActions.setBackgroundService(active: false, summary: ''));
     state = LinkState.disconnected;
   }
 
@@ -851,6 +936,7 @@ final class RingController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _resetLink();
+    deviceActions.dispose();
     unawaited(_subscription.cancel());
     unawaited(_work.whenComplete(database.close));
     super.dispose();

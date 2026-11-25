@@ -28,33 +28,62 @@ void main() {
     expect(analyzer.waveform, isNotEmpty);
   });
 
-  test('GestureDetector3D distinguishes rest, tap, double-tap, and flick', () {
+  test('GestureDetector3D distinguishes rest, sideways double-tap, deferred tap, and flick', () {
     final detector = GestureDetector3D();
+    final events = <GestureEvent>[];
+    void feed(AccSample sample) {
+      final ev = detector.addSample(sample);
+      if (ev != null) events.add(ev);
+    }
+
     // 1 second of resting 1g
     for (var i = 0; i < 25; i++) {
-      expect(detector.addSample((x: 0, y: 0, z: 1024)), isNull);
+      feed((x: 0, y: 0, z: 1024));
     }
+    expect(events, isEmpty);
+
+    // Sideways pinch/tap perpendicular to gravity (|mag - 1g| is only 0.11g,
+    // but 3D linear accel + jerk is ~0.5g), followed 240 ms later by tap 2.
+    feed((x: 520, y: 0, z: 1024));
+    for (var i = 0; i < 5; i++) {
+      feed((x: 0, y: 0, z: 1024));
+    }
+    feed((x: 520, y: 0, z: 1024));
+    for (var i = 0; i < 5; i++) {
+      feed((x: 0, y: 0, z: 1024));
+    }
+    expect(events.map((e) => e.gesture), [RingGesture.doubleTap]);
+    expect(detector.doubleTapCount, 1);
     expect(detector.tapCount, 0);
 
-    // First tap (~1.7g impulse)
-    final tap1 = detector.addSample((x: 0, y: 0, z: 1750));
-    expect(tap1?.gesture, RingGesture.tap);
-
-    // 7 samples (~280 ms) of rest, then second tap -> double tap
-    for (var i = 0; i < 7; i++) {
-      detector.addSample((x: 0, y: 0, z: 1024));
+    // Isolated single tap emits once the 880 ms double-tap window elapses.
+    feed((x: 0, y: 0, z: 1550));
+    for (var i = 0; i < 26; i++) {
+      feed((x: 0, y: 0, z: 1024));
     }
-    final tap2 = detector.addSample((x: 0, y: 0, z: 1750));
-    expect(tap2?.gesture, RingGesture.doubleTap);
-    expect(detector.doubleTapCount, 1);
+    expect(events.map((e) => e.gesture), [
+      RingGesture.doubleTap,
+      RingGesture.tap,
+    ]);
+    expect(detector.tapCount, 1);
 
-    // 10 samples of rest, then high-energy wrist flick (~2.6g)
-    for (var i = 0; i < 10; i++) {
-      detector.addSample((x: 0, y: 0, z: 1024));
+    // High-energy wrist flick.
+    feed((x: 2000, y: 1200, z: 1200));
+    for (var i = 0; i < 5; i++) {
+      feed((x: 0, y: 0, z: 1024));
     }
-    final flick = detector.addSample((x: 2000, y: 1200, z: 1200));
-    expect(flick?.gesture, RingGesture.flick);
+    expect(events.last.gesture, RingGesture.flick);
     expect(detector.flickCount, 1);
+
+    // Sensitivity levels shift thresholds monotonically.
+    expect(
+      GestureSensitivity.high.tapThresholdG,
+      lessThan(GestureSensitivity.medium.tapThresholdG),
+    );
+    expect(
+      GestureSensitivity.medium.tapThresholdG,
+      lessThan(GestureSensitivity.low.tapThresholdG),
+    );
   });
 
   test('ThermalGradient and CircadianInsights decode real FR02.023 history fixture', () {

@@ -49,6 +49,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('PPG Biofeedback & Breathing'), findsOneWidget);
     expect(find.text('25 Hz Motion & Finger Gestures'), findsOneWidget);
+    expect(find.text('System-Wide Device Control'), findsOneWidget);
     expect(find.text('Dual-NTC Thermal Gradient'), findsOneWidget);
     expect(find.text('Hidden History: Light, Thermal & HRV'), findsOneWidget);
 

@@ -5,11 +5,12 @@ import 'package:material_ui/material_ui.dart';
 import 'package:ring_protocol/ring_protocol.dart';
 
 import '../ble/ring_controller.dart';
+import '../data/gesture_actions.dart';
 import 'sparkline.dart';
 
 /// Live sensor lab & hidden-channel explorer for unused ring hardware:
 /// - `06 05 00` -> `0x12`: 4-ch optical PPG biofeedback (live BPM, RMSSD, PI%)
-/// - `23 03 00` -> `0x13`: 25 Hz 3-axis accelerometer & finger gestures
+/// - `23 03 00` -> `0x13`: 25 Hz 3-axis accelerometer & system-wide gestures
 /// - `29 00 00` -> `0xa9`: live dual-NTC thermal gradient
 /// - `0x4c` / `0x47` SQLite history: hidden 30 s ambient light & thermal delta
 class SensorLabScreen extends StatefulWidget {
@@ -21,14 +22,28 @@ class SensorLabScreen extends StatefulWidget {
   State<SensorLabScreen> createState() => _SensorLabScreenState();
 }
 
-class _SensorLabScreenState extends State<SensorLabScreen> {
+class _SensorLabScreenState extends State<SensorLabScreen>
+    with WidgetsBindingObserver {
   Future<CircadianInsights>? _insights;
   String? _insightsDevice;
+  late final TextEditingController _webhookController;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _webhookController = TextEditingController(
+      text: widget.ring.gestureConfig.webhookUrl,
+    );
     _refreshInsights();
+    unawaited(widget.ring.refreshAccessibilityStatus());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(widget.ring.refreshAccessibilityStatus());
+    }
   }
 
   @override
@@ -37,6 +52,18 @@ class _SensorLabScreenState extends State<SensorLabScreen> {
     if (widget.ring.deviceId != _insightsDevice) {
       _refreshInsights();
     }
+    final storedUrl = widget.ring.gestureConfig.webhookUrl;
+    if (_webhookController.text != storedUrl &&
+        _webhookController.text.isEmpty) {
+      _webhookController.text = storedUrl;
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _webhookController.dispose();
+    super.dispose();
   }
 
   void _refreshInsights() {
@@ -53,6 +80,7 @@ class _SensorLabScreenState extends State<SensorLabScreen> {
     final colors = theme.colorScheme;
     final ppg = ring.ppgAnalyzer;
     final acc = ring.gestureDetector;
+    final cfg = ring.gestureConfig;
     final temp = ring.sensorTemperature;
     final gradient = temp != null
         ? ThermalGradient(ntc1: temp.temperature1, ntc2: temp.temperature2)
@@ -143,22 +171,27 @@ class _SensorLabScreenState extends State<SensorLabScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Streams live 3-axis accelerometer data (23 03 00 → 0x13) in '
-                'normal mode to detect finger taps, double-taps, and wrist flicks.',
+                'Uses 3D gravity-removed acceleration + jerk so finger taps '
+                'register in any orientation. Single taps wait 0.9 s so double '
+                'taps never double-fire.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: colors.onSurfaceVariant,
                 ),
               ),
               const SizedBox(height: 14),
               Wrap(
-                spacing: 22,
+                spacing: 20,
                 runSpacing: 10,
                 children: [
                   _Stat(
-                    'Accel',
-                    acc.latestG != null
-                        ? '${acc.latestG!.toStringAsFixed(2)} g'
+                    '3D impulse',
+                    acc.latestImpulseG != null
+                        ? '${acc.latestImpulseG!.toStringAsFixed(2)} g'
                         : '—',
+                  ),
+                  _Stat(
+                    'Threshold',
+                    '${acc.tapThresholdG.toStringAsFixed(2)} g',
                   ),
                   _Stat('Taps', '${acc.tapCount}'),
                   _Stat('Double taps', '${acc.doubleTapCount}'),
@@ -178,17 +211,59 @@ class _SensorLabScreenState extends State<SensorLabScreen> {
                   ),
                 ),
               ],
-              if (acc.magnitudeTrace.isNotEmpty) ...[
+              if (acc.impulseTrace.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 Sparkline(
                   points: [
-                    for (var i = 0; i < acc.magnitudeTrace.length; i++)
-                      (x: i, value: acc.magnitudeTrace[i]),
+                    for (var i = 0; i < acc.impulseTrace.length; i++)
+                      (x: i, value: acc.impulseTrace[i]),
                   ],
-                  label: 'Live 25 Hz acceleration magnitude',
+                  label: 'Live 25 Hz 3D impulse with tap threshold',
                   color: colors.secondary,
+                  threshold: acc.tapThresholdG,
+                  thresholdColor: colors.primary,
+                  minValue: 0,
+                  maxValue: 1.2,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Dashed line = tap threshold (${acc.tapThresholdG.toStringAsFixed(2)} g). '
+                  'Lower sensitivity if everyday movement triggers taps.',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
                 ),
               ],
+              const SizedBox(height: 14),
+              Text(
+                'Sensitivity',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final level in GestureSensitivity.values)
+                    ChoiceChip(
+                      label: Text(
+                        '${level.label} (${level.tapThresholdG.toStringAsFixed(2)}g)',
+                      ),
+                      selected: cfg.sensitivity == level,
+                      onSelected: (selected) {
+                        if (selected) {
+                          unawaited(
+                            ring.updateGestureConfig(
+                              cfg.copyWith(sensitivity: level),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                ],
+              ),
               const SizedBox(height: 14),
               FilledButton.tonalIcon(
                 onPressed: ring.connected && !ring.syncing
@@ -203,6 +278,174 @@ class _SensorLabScreenState extends State<SensorLabScreen> {
                       : 'Start 25 Hz gesture stream',
                 ),
               ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        const _Heading('System-Wide Device Control'),
+        _Card(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                ring.deviceActions.supported
+                    ? 'Map ring gestures to Android actions that work across '
+                          'Spotify, YouTube, Camera, Kindle, Tasker, or Home '
+                          'Assistant — even in the background or with the screen off.'
+                    : 'System-wide Android device actions (media, flashlight, '
+                          'scroll, webhooks) are available on Android. On macOS, '
+                          'use the CLI --gestures hooks.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Trigger device actions'),
+                subtitle: const Text(
+                  'Run mapped actions whenever the gesture stream detects a gesture',
+                ),
+                value: cfg.actionsEnabled,
+                onChanged: (value) => unawaited(
+                  ring.updateGestureConfig(cfg.copyWith(actionsEnabled: value)),
+                ),
+              ),
+              if (ring.deviceActions.supported) ...[
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Keep active in background'),
+                  subtitle: const Text(
+                    'Runs an Android foreground notification so gestures keep '
+                    'working in other apps and when the screen is off',
+                  ),
+                  value: cfg.backgroundService,
+                  onChanged: (value) => unawaited(
+                    ring.updateGestureConfig(
+                      cfg.copyWith(backgroundService: value),
+                    ),
+                  ),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Haptic confirmation'),
+                  subtitle: const Text(
+                    'Vibrate phone subtly when a gesture triggers an action',
+                  ),
+                  value: cfg.hapticFeedback,
+                  onChanged: (value) => unawaited(
+                    ring.updateGestureConfig(
+                      cfg.copyWith(hapticFeedback: value),
+                    ),
+                  ),
+                ),
+              ],
+              const Divider(height: 24),
+              _GestureActionRow(
+                label: 'Single tap',
+                gesture: RingGesture.tap,
+                selected: cfg.tapAction,
+                onChanged: (action) => unawaited(
+                  ring.updateGestureConfig(cfg.copyWith(tapAction: action)),
+                ),
+                onTest: () => unawaited(ring.testGestureAction(RingGesture.tap)),
+              ),
+              const SizedBox(height: 10),
+              _GestureActionRow(
+                label: 'Double tap',
+                gesture: RingGesture.doubleTap,
+                selected: cfg.doubleTapAction,
+                onChanged: (action) => unawaited(
+                  ring.updateGestureConfig(
+                    cfg.copyWith(doubleTapAction: action),
+                  ),
+                ),
+                onTest: () =>
+                    unawaited(ring.testGestureAction(RingGesture.doubleTap)),
+              ),
+              const SizedBox(height: 10),
+              _GestureActionRow(
+                label: 'Wrist flick',
+                gesture: RingGesture.flick,
+                selected: cfg.flickAction,
+                onChanged: (action) => unawaited(
+                  ring.updateGestureConfig(cfg.copyWith(flickAction: action)),
+                ),
+                onTest: () =>
+                    unawaited(ring.testGestureAction(RingGesture.flick)),
+              ),
+              if (cfg.usesWebhook) ...[
+                const SizedBox(height: 14),
+                TextField(
+                  controller: _webhookController,
+                  keyboardType: TextInputType.url,
+                  decoration: const InputDecoration(
+                    labelText: 'Webhook URL (POST JSON)',
+                    hintText: 'http://homeassistant.local:8123/api/webhook/...',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  onChanged: (url) => unawaited(
+                    ring.updateGestureConfig(cfg.copyWith(webhookUrl: url)),
+                  ),
+                ),
+              ],
+              if (ring.deviceActions.supported && cfg.usesAccessibility) ...[
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: ring.accessibilityEnabled
+                        ? colors.primaryContainer.withValues(alpha: 0.45)
+                        : colors.secondaryContainer.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        ring.accessibilityEnabled
+                            ? 'Accessibility service active — scroll, swipe, back, and screenshot are ready.'
+                            : 'Scroll, swipe, back, and screenshot need the optional Ring Companion Accessibility service (never reads screen content).',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        children: [
+                          if (!ring.accessibilityEnabled)
+                            FilledButton.tonalIcon(
+                              onPressed: () => unawaited(
+                                ring.openAccessibilitySettings(),
+                              ),
+                              icon: const Icon(Icons.accessibility_new, size: 18),
+                              label: const Text('Enable Accessibility'),
+                            ),
+                          TextButton.icon(
+                            onPressed: () => unawaited(
+                              ring.refreshAccessibilityStatus(),
+                            ),
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text('Check status'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              if (ring.lastGestureActionDetail case final detail?) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Last action: $detail',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.primary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -336,6 +579,77 @@ class _SensorLabScreenState extends State<SensorLabScreen> {
   }
 }
 
+class _GestureActionRow extends StatelessWidget {
+  const _GestureActionRow({
+    required this.label,
+    required this.gesture,
+    required this.selected,
+    required this.onChanged,
+    required this.onTest,
+  });
+
+  final String label;
+  final RingGesture gesture;
+  final RingDeviceAction selected;
+  final ValueChanged<RingDeviceAction> onChanged;
+  final VoidCallback onTest;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(label, style: theme.textTheme.titleSmall),
+            ),
+            IconButton(
+              onPressed: selected == RingDeviceAction.none ? null : onTest,
+              tooltip: 'Test $label action',
+              icon: const Icon(Icons.play_arrow_rounded, size: 20),
+              visualDensity: VisualDensity.compact,
+            ),
+          ],
+        ),
+        DropdownButtonFormField<RingDeviceAction>(
+          initialValue: selected,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            isDense: true,
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          ),
+          items: [
+            for (final action in RingDeviceAction.values)
+              DropdownMenuItem(
+                value: action,
+                child: Text(
+                  action.requiresAccessibility
+                      ? '${action.label} (Accessibility)'
+                      : action.label,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+          onChanged: (next) {
+            if (next != null) onChanged(next);
+          },
+        ),
+        const SizedBox(height: 3),
+        Text(
+          selected.description,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: colors.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// 5.5 s inhale / 5.5 s exhale (~5.5 breaths/min) coherent breathing pacer.
 class _BreathPacer extends StatefulWidget {
   const _BreathPacer();
@@ -368,27 +682,36 @@ class _BreathPacerState extends State<_BreathPacer> {
   @override
   Widget build(BuildContext context) {
     final pos = (_clock.elapsedMilliseconds % _cycleMs) / _cycleMs;
-    final inhaling = pos < 0.5;
-    final phase = inhaling ? pos * 2 : (1 - pos) * 2;
-    final fill = 0.5 - 0.5 * math.cos(phase * math.pi);
+    final inhale = pos < 0.5;
+    final phase = inhale ? pos * 2 : (1.0 - pos) * 2;
+    final eased = 0.5 - 0.5 * math.cos(phase * math.pi);
     final colors = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          inhaling
-              ? 'Coherent pacer • Inhale slowly (5.5 s)'
-              : 'Coherent pacer • Exhale gently (5.5 s)',
-          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-            color: colors.primary,
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              inhale ? 'Inhale slowly (5.5 s)' : 'Exhale gently (5.5 s)',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: colors.primary,
+              ),
+            ),
+            Text(
+              '5.5 breaths/min',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 8),
         ClipRRect(
-          borderRadius: BorderRadius.circular(999),
+          borderRadius: BorderRadius.circular(8),
           child: LinearProgressIndicator(
-            value: fill,
-            minHeight: 8,
+            value: eased.clamp(0.04, 1.0),
+            minHeight: 10,
             backgroundColor: colors.surfaceContainerHighest,
           ),
         ),

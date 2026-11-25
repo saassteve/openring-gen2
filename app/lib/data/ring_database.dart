@@ -621,6 +621,18 @@ class RingDatabase extends _$RingDatabase {
         ),
       );
 
+  Future<String?> getPreference(String key) async {
+    final row = await (select(appPreferences)
+          ..where((pref) => pref.key.equals(key)))
+        .getSingleOrNull();
+    return row?.value;
+  }
+
+  Future<void> setPreference(String key, String value) => into(appPreferences)
+      .insertOnConflictUpdate(
+        AppPreferencesCompanion.insert(key: key, value: value),
+      );
+
   Stream<bool> watchAutoHealthExport() => (select(appPreferences)
         ..where((pref) => pref.key.equals(autoHealthExportKey)))
       .watchSingleOrNull()

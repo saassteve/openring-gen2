@@ -9,6 +9,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterFragmentActivity() {
     private var ble: RingBleBridge? = null
     private var health: HealthConnectBridge? = null
+    private var deviceActions: DeviceActionBridge? = null
     private var unavailableHealthChannel: MethodChannel? = null
     private val healthPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         registerForActivityResult(
@@ -22,6 +23,7 @@ class MainActivity : FlutterFragmentActivity() {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
         ble = RingBleBridge(this, messenger)
+        deviceActions = DeviceActionBridge(this, messenger)
         val permissionLauncher = healthPermissions
         if (permissionLauncher != null) {
             health = HealthConnectBridge(this, messenger, permissionLauncher::launch)
@@ -41,6 +43,7 @@ class MainActivity : FlutterFragmentActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         ble?.onPermissions(requestCode, grantResults)
+        deviceActions?.onPermissions(requestCode, grantResults)
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
@@ -48,6 +51,8 @@ class MainActivity : FlutterFragmentActivity() {
         ble = null
         health?.dispose()
         health = null
+        deviceActions?.dispose()
+        deviceActions = null
         unavailableHealthChannel?.setMethodCallHandler(null)
         unavailableHealthChannel = null
         super.cleanUpFlutterEngine(flutterEngine)
