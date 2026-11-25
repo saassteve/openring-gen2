@@ -178,9 +178,17 @@ class _ConnectionHeader extends StatelessWidget {
             for (final device in ring.nearby)
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.bluetooth),
+                leading: Icon(
+                  device.source == 'connected'
+                      ? Icons.bluetooth_connected
+                      : Icons.bluetooth,
+                ),
                 title: Text(device.name),
-                subtitle: Text('${device.rssi} dBm'),
+                subtitle: Text(switch (device.source) {
+                  'connected' => 'Connected on this phone · tap to attach',
+                  'bonded' => 'Paired on this phone',
+                  _ => '${device.rssi} dBm',
+                }),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => ring.connect(device),
               ),

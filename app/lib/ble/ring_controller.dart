@@ -22,7 +22,7 @@ enum LinkState {
   ready,
 }
 
-typedef NearbyRing = ({String id, String name, int rssi});
+typedef NearbyRing = ({String id, String name, int rssi, String? source});
 typedef HeartRatePoint = ({DateTime time, int bpm});
 
 final class RingController extends ChangeNotifier {
@@ -109,8 +109,17 @@ final class RingController extends ChangeNotifier {
   bool get ppgStreaming => mode == RingMode.densePpg;
   bool get syncing => drain != null && !drain!.finished;
   String? get deviceId => _deviceId;
-  List<NearbyRing> get nearby =>
-      _nearby.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi));
+  List<NearbyRing> get nearby {
+    int rank(String? source) => switch (source) {
+      'connected' => 0,
+      'bonded' => 2,
+      _ => 1,
+    };
+    return _nearby.values.toList()..sort((a, b) {
+      final byRank = rank(a.source).compareTo(rank(b.source));
+      return byRank != 0 ? byRank : b.rssi.compareTo(a.rssi);
+    });
+  }
   List<HeartRatePoint> get heartRate => List.unmodifiable(_heartRate);
   int get discardedBytes => _parser.discardedBytes;
   bool get canSendCommands =>
@@ -385,10 +394,15 @@ final class RingController extends ChangeNotifier {
           case 'device':
             if (state != LinkState.scanning) return;
             final id = event['id'] as String;
+            final source = event['source'] as String?;
+            final prev = _nearby[id];
             _nearby[id] = (
               id: id,
               name: event['name'] as String,
               rssi: event['rssi'] as int,
+              source:
+                  source ??
+                  (prev?.source == 'connected' ? 'connected' : null),
             );
           case 'ready':
             if (state == LinkState.connecting && _selected?.id == event['id']) {

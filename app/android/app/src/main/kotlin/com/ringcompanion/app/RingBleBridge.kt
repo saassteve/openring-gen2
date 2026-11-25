@@ -206,9 +206,30 @@ internal class RingBleBridge(
             }
         }
         scan = callback
+        emit("scan", "active" to true)
+        // Rings already connected to another app on this phone stop advertising.
+        // Surface connected and bonded rings immediately alongside live BLE scan results.
+        val connected = runCatching { manager?.getConnectedDevices(BluetoothProfile.GATT).orEmpty() }
+            .getOrDefault(emptyList())
+        for (device in connected) {
+            val name = device.name ?: continue
+            if (!name.contains("RingConn Gen2", ignoreCase = true)) continue
+            val id = device.address
+            discovered[id] = name
+            emit("device", "id" to id, "name" to name, "rssi" to 0, "source" to "connected")
+        }
+        val bonded = runCatching { manager?.adapter?.bondedDevices.orEmpty() }
+            .getOrDefault(emptyList())
+        for (device in bonded) {
+            val name = device.name ?: continue
+            if (!name.contains("RingConn Gen2", ignoreCase = true)) continue
+            val id = device.address
+            if (id in discovered) continue
+            discovered[id] = name
+            emit("device", "id" to id, "name" to name, "rssi" to -1, "source" to "bonded")
+        }
         // The ring advertises its name in the scan response without a service UUID.
         scanner.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), callback)
-        emit("scan", "active" to true)
         scanTimer = Runnable { stopScan() }.also { main.postDelayed(it, 15_000L) }
         result.success(null)
     }

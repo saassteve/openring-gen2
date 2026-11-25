@@ -167,11 +167,23 @@ final class RingBleBridge: NSObject, FlutterStreamHandler, CBCentralManagerDeleg
     private func beginScan(_ central: CBCentralManager) {
         scanRequested = false
         scanActive = true
+        emit("scan", ["active": true])
+        // Rings already held by another app on this device stop advertising.
+        for peripheral in central.retrieveConnectedPeripherals(withServices: [serviceID]) {
+            let name = peripheral.name ?? "RingConn Gen2"
+            guard name.localizedCaseInsensitiveContains("RingConn Gen2") else { continue }
+            discovered[peripheral.identifier] = peripheral
+            emit("device", [
+                "id": peripheral.identifier.uuidString,
+                "name": name,
+                "rssi": 0,
+                "source": "connected",
+            ])
+        }
         central.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
-        emit("scan", ["active": true])
     }
 
     private func stopScan() {

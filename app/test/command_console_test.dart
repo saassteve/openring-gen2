@@ -141,6 +141,7 @@ void main() {
         id: 'simulated',
         name: 'RingConn Gen2-03AD',
         rssi: -50,
+        source: null,
       ));
       Future<void> emit(Map<String, Object> event) async {
         await messenger.handlePlatformMessage(
