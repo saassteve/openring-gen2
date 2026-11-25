@@ -1,0 +1,3 @@
+<resources>
+    <bool name="health_connect_supported">false</bool>
+</resources>

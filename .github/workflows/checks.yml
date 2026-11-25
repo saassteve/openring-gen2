@@ -1,0 +1,53 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ring_protocol:
+    name: Pure-Dart ring_protocol
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Pub get, analyze, and test
+        working-directory: app/packages/ring_protocol
+        run: |
+          dart pub get
+          dart analyze
+          dart test
+
+  companion_app:
+    name: Flutter Ring Companion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Pub get, analyze, and test
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+  python_decoders:
+    name: Python Trace Decoders
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify decoders on redacted fixtures
+        run: |
+          mkdir -p /tmp/dec-ppg /tmp/dec-hist
+          python3 tools/decode_battery.py traces/rc_batt_conn.jsonl /tmp/dec-batt.csv
+          python3 tools/decode_ppg.py traces/rc_modes.jsonl /tmp/dec-ppg
+          python3 tools/decode_history.py traces/rc_hist_end.jsonl /tmp/dec-hist
