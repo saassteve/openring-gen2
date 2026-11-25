@@ -70,9 +70,14 @@ internal class RingBleBridge(
     private val reads = ArrayDeque<BluetoothGattCharacteristic>()
     private var activeRead: UUID? = null
     private val info = mutableMapOf<UUID, ByteArray>()
-    private data class WriteRequest(val bytes: ByteArray, val result: MethodChannel.Result)
+    private data class WriteRequest(
+        val bytes: ByteArray,
+        val result: MethodChannel.Result,
+        var retries: Int = 0,
+    )
     private val writes = ArrayDeque<WriteRequest>()
     private var activeWrite: WriteRequest? = null
+    private var retryWriteTimer: Runnable? = null
 
     override fun onListen(arguments: Any?, eventSink: EventChannel.EventSink) {
         sink = eventSink
@@ -479,22 +484,55 @@ internal class RingBleBridge(
     private fun pumpWrites() {
         val link = gatt ?: return
         val characteristic = writeChar ?: return
-        if (activeWrite != null) return
+        if (activeWrite != null || retryWriteTimer != null) return
         val request = writes.removeFirstOrNull() ?: return
         activeWrite = request
         arm(ATT_TIMEOUT) { fail("GATT write response timed out") }
-        val started = if (Build.VERSION.SDK_INT >= 33) {
-            link.writeCharacteristic(characteristic, request.bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
-                BluetoothStatusCodes.SUCCESS
-        } else {
-            @Suppress("DEPRECATION")
-            run {
-                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                characteristic.value = request.bytes
-                link.writeCharacteristic(characteristic)
+        if (Build.VERSION.SDK_INT >= 33) {
+            val code = link.writeCharacteristic(
+                characteristic,
+                request.bytes,
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            )
+            if (code == BluetoothStatusCodes.SUCCESS) return
+            if (code == BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY && request.retries < 10) {
+                disarm()
+                activeWrite = null
+                request.retries += 1
+                writes.addFirst(request)
+                retryWriteTimer = Runnable {
+                    retryWriteTimer = null
+                    pumpWrites()
+                }.also { main.postDelayed(it, 120L) }
+                return
             }
+            if (code == BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY) {
+                fail("GATT write busy — close or force-stop the other ring app and retry")
+            } else {
+                fail("Could not queue the GATT write ($code)")
+            }
+            return
         }
-        if (!started) fail("Could not queue the GATT write")
+        @Suppress("DEPRECATION")
+        val started = run {
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            characteristic.value = request.bytes
+            link.writeCharacteristic(characteristic)
+        }
+        if (!started) {
+            if (request.retries < 5) {
+                disarm()
+                activeWrite = null
+                request.retries += 1
+                writes.addFirst(request)
+                retryWriteTimer = Runnable {
+                    retryWriteTimer = null
+                    pumpWrites()
+                }.also { main.postDelayed(it, 120L) }
+                return
+            }
+            fail("Could not queue the GATT write — close or force-stop any other ring app and retry")
+        }
     }
 
     private fun arm(delay: Long, block: () -> Unit) {
@@ -518,6 +556,8 @@ internal class RingBleBridge(
 
     private fun closeConnection(reason: String) {
         disarm()
+        retryWriteTimer?.let(main::removeCallbacks)
+        retryWriteTimer = null
         val link = gatt
         gatt = null
         writeChar = null
