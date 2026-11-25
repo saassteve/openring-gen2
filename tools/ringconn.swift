@@ -121,11 +121,13 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var gGravX = 0.0, gGravY = 0.0, gGravZ = 1.0
     var gPrevX = 0.0, gPrevY = 0.0, gPrevZ = 1.0
     var gSampleIdx = 0
-    var gInBurst = false
-    var gBurstSamples = 0
-    var gBurstPeakG = 0.0
-    var gBurstPeakSample = -100
+    var gInTap = false
+    var gTapSamples = 0
+    var gTapPeakG = 0.0
+    var gTapPeakSample = -100
     var gLastTapPeak = -100
+    var gRotStreak = 0
+    var gLastFlickSample = -100
     var gPendingTap: (peakG: Double, sample: Int)? = nil
 
     var histCh = 0
@@ -322,61 +324,82 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func processAccGestures(_ b: [UInt8]) {
         guard b.count >= 156 else { return }
         let tapThresh = 0.34
-        let flickThresh = 1.15
+        let flickAngleDeg = 45.0
         for s in 0..<25 {
             let off = 6 + s * 6
             let ax = Double(Int16(bitPattern: (UInt16(b[off]) << 8) | UInt16(b[off + 1]))) / 1024.0
             let ay = Double(Int16(bitPattern: (UInt16(b[off + 2]) << 8) | UInt16(b[off + 3]))) / 1024.0
             let az = Double(Int16(bitPattern: (UInt16(b[off + 4]) << 8) | UInt16(b[off + 5]))) / 1024.0
+            let magG = sqrt(ax * ax + ay * ay + az * az)
             if !gInit {
                 gInit = true
                 gGravX = ax; gGravY = ay; gGravZ = az
                 gPrevX = ax; gPrevY = ay; gPrevZ = az
             }
+            let gravNorm = max(1e-6, sqrt(gGravX * gGravX + gGravY * gGravY + gGravZ * gGravZ))
             let dx = ax - gGravX, dy = ay - gGravY, dz = az - gGravZ
             let linG = sqrt(dx * dx + dy * dy + dz * dz)
             let jx = ax - gPrevX, jy = ay - gPrevY, jz = az - gPrevZ
             let jerkG = sqrt(jx * jx + jy * jy + jz * jz)
-            let impulseG = 0.45 * linG + 0.55 * jerkG
-            let alpha = linG < 0.25 ? 0.14 : 0.03
-            gGravX += alpha * dx; gGravY += alpha * dy; gGravZ += alpha * dz
-            gPrevX = ax; gPrevY = ay; gPrevZ = az
+            let dot = ax * gGravX + ay * gGravY + az * gGravZ
+            let cosAngle = min(1.0, max(-1.0, dot / max(1e-6, magG * gravNorm)))
+            let angleDeg = acos(cosAngle) * (180.0 / .pi)
+            // Positive impact above resting gravity (ignores <1g wind-up finger lift).
+            let posImpactG = max(0.0, magG - gravNorm)
 
-            if !gInBurst {
-                if impulseG >= tapThresh {
-                    gInBurst = true
-                    gBurstSamples = 1
-                    gBurstPeakG = impulseG
-                    gBurstPeakSample = gSampleIdx
-                }
-            } else if impulseG >= tapThresh * 0.65 && gBurstSamples < 12 {
-                gBurstSamples += 1
-                if impulseG > gBurstPeakG {
-                    gBurstPeakG = impulseG
-                    gBurstPeakSample = gSampleIdx
+            var emitted = false
+            // 1. Wrist flick: sustained 3D gravity-vector rotation (>= 120 ms).
+            if angleDeg >= flickAngleDeg && magG < 1.65 {
+                gRotStreak += 1
+                if gRotStreak == 3 && (gSampleIdx - gLastFlickSample) >= 20 {
+                    gLastFlickSample = gSampleIdx
+                    gPendingTap = nil
+                    gInTap = false
+                    emitted = true
+                    runGestureHook(onFlickCmd, label: "flick", peakG: angleDeg)
                 }
             } else {
-                gInBurst = false
-                let isFlick = gBurstPeakG >= flickThresh ||
-                    (gBurstSamples > 5 && gBurstPeakG >= tapThresh * 1.4)
-                if isFlick {
-                    gPendingTap = nil
-                    gLastTapPeak = gBurstPeakSample
-                    runGestureHook(onFlickCmd, label: "flick", peakG: gBurstPeakG)
-                } else if gBurstSamples <= 5 && (gBurstPeakSample - gLastTapPeak) >= 3 {
-                    gLastTapPeak = gBurstPeakSample
-                    if let prev = gPendingTap, (gBurstPeakSample - prev.sample) <= 22 {
-                        gPendingTap = nil
-                        runGestureHook(onDoubleTapCmd, label: "double-tap", peakG: gBurstPeakG)
-                    } else {
-                        gPendingTap = (gBurstPeakG, gBurstPeakSample)
+                gRotStreak = 0
+            }
+
+            // 2. Tap / Double tap: crisp positive impact with steady orientation.
+            if !emitted {
+                if !gInTap {
+                    if posImpactG >= tapThresh && jerkG >= tapThresh && angleDeg < 38.0 && (gSampleIdx - gLastFlickSample) >= 12 {
+                        gInTap = true
+                        gTapSamples = 1
+                        gTapPeakG = posImpactG
+                        gTapPeakSample = gSampleIdx
+                    }
+                } else if posImpactG >= tapThresh * 0.5 && gTapSamples <= 4 {
+                    gTapSamples += 1
+                    if posImpactG > gTapPeakG {
+                        gTapPeakG = posImpactG
+                        gTapPeakSample = gSampleIdx
+                    }
+                } else {
+                    gInTap = false
+                    if gTapSamples <= 4 && (gTapPeakSample - gLastTapPeak) >= 5 {
+                        gLastTapPeak = gTapPeakSample
+                        if let prev = gPendingTap, (gTapPeakSample - prev.sample) <= 18 {
+                            gPendingTap = nil
+                            emitted = true
+                            runGestureHook(onDoubleTapCmd, label: "double-tap", peakG: gTapPeakG)
+                        } else {
+                            gPendingTap = (gTapPeakG, gTapPeakSample)
+                        }
                     }
                 }
             }
-            if !gInBurst, let prev = gPendingTap, (gSampleIdx - prev.sample) > 22 {
+
+            if !emitted && !gInTap, let prev = gPendingTap, (gSampleIdx - prev.sample) > 18 {
                 gPendingTap = nil
                 runGestureHook(onTapCmd, label: "tap", peakG: prev.peakG)
             }
+
+            let alpha = linG < 0.25 ? 0.12 : 0.025
+            gGravX += alpha * dx; gGravY += alpha * dy; gGravZ += alpha * dz
+            gPrevX = ax; gPrevY = ay; gPrevZ = az
             gSampleIdx += 1
         }
     }

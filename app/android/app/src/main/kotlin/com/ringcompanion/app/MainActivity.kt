@@ -1,5 +1,6 @@
 package com.ringcompanion.app
 
+import android.content.Intent
 import android.os.Build
 import androidx.health.connect.client.PermissionController
 import io.flutter.embedding.android.FlutterFragmentActivity
@@ -24,6 +25,10 @@ class MainActivity : FlutterFragmentActivity() {
         val messenger = flutterEngine.dartExecutor.binaryMessenger
         ble = RingBleBridge(this, messenger)
         deviceActions = DeviceActionBridge(this, messenger)
+        if (intent?.getBooleanExtra(RingQuickTileService.EXTRA_TOGGLE_GESTURES, false) == true) {
+            intent.removeExtra(RingQuickTileService.EXTRA_TOGGLE_GESTURES)
+            deviceActions?.notifyTileToggle(fromColdLaunch = true)
+        }
         val permissionLauncher = healthPermissions
         if (permissionLauncher != null) {
             health = HealthConnectBridge(this, messenger, permissionLauncher::launch)
@@ -33,6 +38,15 @@ class MainActivity : FlutterFragmentActivity() {
                     result.error("unavailable", "Health Connect export requires Android 9 or later.", null)
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(RingQuickTileService.EXTRA_TOGGLE_GESTURES, false)) {
+            intent.removeExtra(RingQuickTileService.EXTRA_TOGGLE_GESTURES)
+            deviceActions?.notifyTileToggle(fromColdLaunch = false)
         }
     }
 

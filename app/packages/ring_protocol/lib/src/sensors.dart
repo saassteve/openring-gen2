@@ -214,29 +214,33 @@ enum RingGesture {
 }
 
 enum GestureSensitivity {
-  high('High', tapThresholdG: 0.22, flickThresholdG: 0.90),
-  medium('Medium', tapThresholdG: 0.34, flickThresholdG: 1.15),
-  low('Low', tapThresholdG: 0.50, flickThresholdG: 1.45);
+  high('High', tapThresholdG: 0.22, flickAngleDeg: 38.0),
+  medium('Medium', tapThresholdG: 0.30, flickAngleDeg: 45.0),
+  low('Low', tapThresholdG: 0.45, flickAngleDeg: 55.0);
 
   const GestureSensitivity(
     this.label, {
     required this.tapThresholdG,
-    required this.flickThresholdG,
+    required this.flickAngleDeg,
   });
 
   final String label;
   final double tapThresholdG;
-  final double flickThresholdG;
+  final double flickAngleDeg;
 }
 
 typedef GestureEvent = ({RingGesture gesture, double peakG, int sampleIndex});
 
 /// Real-time 25 Hz 3-axis accelerometer gesture detector for `0x13` frames.
 ///
-/// Uses a 3D gravity vector tracker plus 3D jerk so taps perpendicular to
-/// gravity register with the same sensitivity as vertical taps. Single taps
-/// wait for the double-tap window before emitting so double-tapping never
-/// double-fires a single-tap action first.
+/// Separates gestures by true physical signature rather than raw amplitude:
+/// - **Tap / Double tap**: sharp *positive* impact above resting gravity
+///   (`magG - gravityNorm >= tapThresholdG` and sharp 3D jerk) while hand
+///   orientation stays steady (`angle < 38 deg`). Ignoring sub-1g wind-up
+///   finger lifts prevents single taps from double-firing as double taps, and
+///   never misclassifies firm taps as wrist flicks.
+/// - **Wrist flick**: genuine 3D rotation of the ring (`angle >= flickAngleDeg`
+///   sustained for >= 120 ms).
 final class GestureDetector3D {
   GestureDetector3D({
     this.sampleRateHz = 25,
@@ -246,20 +250,21 @@ final class GestureDetector3D {
 
   final int sampleRateHz;
   final double lsbPerG;
+  GestureSensitivity sensitivity;
 
   static const _traceCapacity = 100; // 4 s at 25 Hz
   static const _eventCapacity = 20;
-  static const _hysteresisRatio = 0.65;
-  static const _minInterTapSamples = 3; // 120 ms minimum gap between tap peaks
-  static const _maxTapBurstSamples = 5; // <= 200 ms crisp impulse = tap
-  static const _maxBurstSamples = 12; // 480 ms burst cap
-  static const _doubleTapMaxSamples = 22; // 880 ms window for second tap
+  static const _minInterTapSamples = 5; // 200 ms min between tap impacts
+  static const _maxTapBurstSamples = 4; // <= 160 ms crisp impact
+  static const _doubleTapMaxSamples = 18; // 720 ms window for second tap
+  static const _tapMaxAngleDeg = 38.0;
+  static const _flickSustainSamples = 3; // 120 ms sustained wrist rotation
+  static const _flickCooldownSamples = 20; // 800 ms between flicks
 
   final List<double> _magnitudeTrace = [];
   final List<double> _impulseTrace = [];
   final List<GestureEvent> _events = [];
 
-  GestureSensitivity sensitivity;
   bool _initialized = false;
   double _gravX = 0;
   double _gravY = 0;
@@ -269,16 +274,19 @@ final class GestureDetector3D {
   double _prevZ = 1.0;
 
   int _sampleIndex = 0;
-  bool _inBurst = false;
-  int _burstSamples = 0;
-  double _burstPeakG = 0;
-  int _burstPeakSample = -100;
+  bool _inTap = false;
+  int _tapSamples = 0;
+  double _tapPeakG = 0;
+  int _tapPeakSample = -100;
   int _lastTapPeakSample = -100;
+  int _rotStreak = 0;
+  int _lastFlickSample = -100;
   ({double peakG, int sampleIndex})? _pendingTap;
 
   AccSample? _latestSample;
   double? _latestG;
   double? _latestImpulseG;
+  double _latestAngleDeg = 0;
   int _tapCount = 0;
   int _doubleTapCount = 0;
   int _flickCount = 0;
@@ -288,8 +296,9 @@ final class GestureDetector3D {
   int _lastRepSample = -100;
 
   double get tapThresholdG => sensitivity.tapThresholdG;
-  double get rollDeg =>
-      math.atan2(_gravY, _gravZ) * (180.0 / math.pi);
+  double get flickAngleDeg => sensitivity.flickAngleDeg;
+  double get latestAngleDeg => _latestAngleDeg;
+  double get rollDeg => math.atan2(_gravY, _gravZ) * (180.0 / math.pi);
   double get pitchDeg =>
       math.atan2(-_gravX, math.sqrt(_gravY * _gravY + _gravZ * _gravZ)) *
       (180.0 / math.pi);
@@ -299,7 +308,6 @@ final class GestureDetector3D {
     _repCount = 0;
     _repArmedHigh = false;
   }
-  double get flickThresholdG => sensitivity.flickThresholdG;
 
   AccSample? get latestSample => _latestSample;
   double? get latestG => _latestG;
@@ -324,15 +332,18 @@ final class GestureDetector3D {
     _prevY = 0;
     _prevZ = 1.0;
     _sampleIndex = 0;
-    _inBurst = false;
-    _burstSamples = 0;
-    _burstPeakG = 0;
-    _burstPeakSample = -100;
+    _inTap = false;
+    _tapSamples = 0;
+    _tapPeakG = 0;
+    _tapPeakSample = -100;
     _lastTapPeakSample = -100;
+    _rotStreak = 0;
+    _lastFlickSample = -100;
     _pendingTap = null;
     _latestSample = null;
     _latestG = null;
     _latestImpulseG = null;
+    _latestAngleDeg = 0;
     _tapCount = 0;
     _doubleTapCount = 0;
     _flickCount = 0;
@@ -370,6 +381,10 @@ final class GestureDetector3D {
       _prevZ = az;
     }
 
+    final gravNorm = math.max(
+      1e-6,
+      math.sqrt(_gravX * _gravX + _gravY * _gravY + _gravZ * _gravZ),
+    );
     final dxG = ax - _gravX;
     final dyG = ay - _gravY;
     final dzG = az - _gravZ;
@@ -380,28 +395,18 @@ final class GestureDetector3D {
     final jz = az - _prevZ;
     final jerkG = math.sqrt(jx * jx + jy * jy + jz * jz);
 
-    // Combine orientation-independent linear accel with sharp sample-to-sample
-    // jerk so taps in any plane (vertical or sideways pinch) register cleanly.
-    final impulseG = 0.45 * linG + 0.55 * jerkG;
-    _latestImpulseG = impulseG;
+    final dot = ax * _gravX + ay * _gravY + az * _gravZ;
+    final cosAngle = (dot / math.max(1e-6, magG * gravNorm)).clamp(-1.0, 1.0);
+    final angleDeg = math.acos(cosAngle) * (180.0 / math.pi);
+    _latestAngleDeg = angleDeg;
 
-    // Adapt gravity baseline quickly near rest and slowly during motion.
-    final alpha = linG < 0.25 ? 0.14 : 0.03;
-    _gravX += alpha * dxG;
-    _gravY += alpha * dyG;
-    _gravZ += alpha * dzG;
-    _prevX = ax;
-    _prevY = ay;
-    _prevZ = az;
+    // Positive impact above resting gravity (ignores <1g wind-up finger lift).
+    final posImpactG = math.max(0.0, magG - gravNorm);
+    _latestImpulseG = posImpactG;
 
-    // Low-pass filtered dynamic acceleration along the gravity axis tracks
-    // smooth periodic workout reps (curls, pushups, squats) at 0.3-2.5 Hz.
-    final gravNorm = math.sqrt(
-      _gravX * _gravX + _gravY * _gravY + _gravZ * _gravZ,
-    );
+    // Low-pass filtered vertical dynamic acceleration for workout rep counting.
     if (gravNorm > 0.2) {
-      final projG =
-          (dxG * _gravX + dyG * _gravY + dzG * _gravZ) / gravNorm;
+      final projG = (dxG * _gravX + dyG * _gravY + dzG * _gravZ) / gravNorm;
       _smoothVerticalG = _smoothVerticalG * 0.72 + projG * 0.28;
       if (!_repArmedHigh && _smoothVerticalG >= 0.24) {
         _repArmedHigh = true;
@@ -416,35 +421,80 @@ final class GestureDetector3D {
 
     _magnitudeTrace.add(magG);
     if (_magnitudeTrace.length > _traceCapacity) _magnitudeTrace.removeAt(0);
-    _impulseTrace.add(impulseG);
+    _impulseTrace.add(posImpactG);
     if (_impulseTrace.length > _traceCapacity) _impulseTrace.removeAt(0);
 
     GestureEvent? emitted;
     final tapThresh = sensitivity.tapThresholdG;
-    final releaseThresh = tapThresh * _hysteresisRatio;
 
-    if (!_inBurst) {
-      if (impulseG >= tapThresh) {
-        _inBurst = true;
-        _burstSamples = 1;
-        _burstPeakG = impulseG;
-        _burstPeakSample = _sampleIndex;
+    // 1. Wrist flick: genuine 3D rotation sustained >= 120 ms (not a tap!).
+    if (angleDeg >= sensitivity.flickAngleDeg && magG < 1.65) {
+      _rotStreak++;
+      if (_rotStreak == _flickSustainSamples &&
+          (_sampleIndex - _lastFlickSample) >= _flickCooldownSamples) {
+        _lastFlickSample = _sampleIndex;
+        _pendingTap = null;
+        _inTap = false;
+        _flickCount++;
+        emitted = _record(
+          (
+            gesture: RingGesture.flick,
+            peakG: angleDeg,
+            sampleIndex: _sampleIndex,
+          ),
+        );
       }
     } else {
-      if (impulseG >= releaseThresh && _burstSamples < _maxBurstSamples) {
-        _burstSamples++;
-        if (impulseG > _burstPeakG) {
-          _burstPeakG = impulseG;
-          _burstPeakSample = _sampleIndex;
+      _rotStreak = 0;
+    }
+
+    // 2. Tap / Double tap: crisp positive impact with steady hand orientation.
+    if (emitted == null) {
+      if (!_inTap) {
+        if (posImpactG >= tapThresh &&
+            jerkG >= tapThresh &&
+            angleDeg < _tapMaxAngleDeg &&
+            (_sampleIndex - _lastFlickSample) >= 12) {
+          _inTap = true;
+          _tapSamples = 1;
+          _tapPeakG = posImpactG;
+          _tapPeakSample = _sampleIndex;
         }
       } else {
-        emitted = _finalizeBurst();
+        if (posImpactG >= tapThresh * 0.5 && _tapSamples <= _maxTapBurstSamples) {
+          _tapSamples++;
+          if (posImpactG > _tapPeakG) {
+            _tapPeakG = posImpactG;
+            _tapPeakSample = _sampleIndex;
+          }
+        } else {
+          _inTap = false;
+          if (_tapSamples <= _maxTapBurstSamples &&
+              (_tapPeakSample - _lastTapPeakSample) >= _minInterTapSamples) {
+            _lastTapPeakSample = _tapPeakSample;
+            final pending = _pendingTap;
+            if (pending != null &&
+                (_tapPeakSample - pending.sampleIndex) <= _doubleTapMaxSamples) {
+              _pendingTap = null;
+              _doubleTapCount++;
+              emitted = _record(
+                (
+                  gesture: RingGesture.doubleTap,
+                  peakG: _tapPeakG,
+                  sampleIndex: _tapPeakSample,
+                ),
+              );
+            } else {
+              _pendingTap = (peakG: _tapPeakG, sampleIndex: _tapPeakSample);
+            }
+          }
+        }
       }
     }
 
-    // Emit a deferred single tap once the double-tap window elapses cleanly.
+    // 3. Emit deferred single tap once double-tap window closes cleanly.
     if (emitted == null &&
-        !_inBurst &&
+        !_inTap &&
         _pendingTap != null &&
         (_sampleIndex - _pendingTap!.sampleIndex) > _doubleTapMaxSamples) {
       final pending = _pendingTap!;
@@ -459,54 +509,17 @@ final class GestureDetector3D {
       );
     }
 
+    // Update gravity vector smoothly near rest and slowly during motion.
+    final alpha = linG < 0.25 ? 0.12 : 0.025;
+    _gravX += alpha * dxG;
+    _gravY += alpha * dyG;
+    _gravZ += alpha * dzG;
+    _prevX = ax;
+    _prevY = ay;
+    _prevZ = az;
+
     _sampleIndex++;
     return emitted;
-  }
-
-  GestureEvent? _finalizeBurst() {
-    _inBurst = false;
-    final peakG = _burstPeakG;
-    final peakSample = _burstPeakSample;
-    final duration = _burstSamples;
-    final flickThresh = sensitivity.flickThresholdG;
-    final tapThresh = sensitivity.tapThresholdG;
-
-    final isFlick =
-        peakG >= flickThresh ||
-        (duration > _maxTapBurstSamples && peakG >= tapThresh * 1.4);
-
-    if (isFlick) {
-      _pendingTap = null;
-      _lastTapPeakSample = peakSample;
-      _flickCount++;
-      return _record(
-        (gesture: RingGesture.flick, peakG: peakG, sampleIndex: peakSample),
-      );
-    }
-
-    if (duration > _maxTapBurstSamples) {
-      // Broad low-energy drift/movement — ignore rather than false-tapping.
-      return null;
-    }
-
-    if ((peakSample - _lastTapPeakSample) < _minInterTapSamples) {
-      // Rebound from the same tap.
-      return null;
-    }
-    _lastTapPeakSample = peakSample;
-
-    final pending = _pendingTap;
-    if (pending != null &&
-        (peakSample - pending.sampleIndex) <= _doubleTapMaxSamples) {
-      _pendingTap = null;
-      _doubleTapCount++;
-      return _record(
-        (gesture: RingGesture.doubleTap, peakG: peakG, sampleIndex: peakSample),
-      );
-    }
-
-    _pendingTap = (peakG: peakG, sampleIndex: peakSample);
-    return null;
   }
 
   GestureEvent _record(GestureEvent event) {

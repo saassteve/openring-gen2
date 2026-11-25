@@ -3,6 +3,7 @@ package com.ringcompanion.app
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -99,12 +100,28 @@ internal class RingBleBridge(
                 }
                 "connect" -> {
                     val id = call.argument<String>("id")
-                    if (id == null || id !in discovered || gatt != null) {
-                        result.error("connect", "Select a discovered ring while disconnected", null)
+                    val adapter = manager?.adapter
+                    if (id == null || gatt != null) {
+                        result.error("connect", "Disconnect before connecting to a ring", null)
+                        return
+                    }
+                    if (adapter == null || !adapter.isEnabled) {
+                        result.error("bluetooth", "Turn on Bluetooth to connect to your ring", null)
+                        return
+                    }
+                    if (Build.VERSION.SDK_INT >= 31 &&
+                        activity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        result.error("permissions", "Grant Bluetooth permission via Scan first", null)
+                        return
+                    }
+                    if (id !in discovered && !BluetoothAdapter.checkBluetoothAddress(id)) {
+                        result.error("connect", "Invalid Bluetooth address for ring", null)
                         return
                     }
                     stopScan()
-                    val device = manager?.adapter?.getRemoteDevice(id)
+                    val device = adapter.getRemoteDevice(id)
                     if (device == null) {
                         result.error("connect", "Bluetooth adapter unavailable", null)
                         return

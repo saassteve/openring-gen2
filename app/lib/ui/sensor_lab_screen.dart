@@ -105,6 +105,45 @@ class _SensorLabScreenState extends State<SensorLabScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        const _Heading('Hands-Free & Auto-Connect'),
+        _Card(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Connect automatically to your saved ring without scanning, '
+                'or add the "Ring Control" tile to Android Quick Settings to '
+                'toggle gestures from your notification shade.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Auto-connect saved ring on launch'),
+                subtitle: const Text(
+                  'Connects directly to your remembered ring without scanning',
+                ),
+                value: ring.autoConnect,
+                onChanged: (v) => unawaited(ring.setAutoConnect(v)),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Auto-arm gestures on connect'),
+                subtitle: const Text(
+                  'Automatically starts 25 Hz Gesture Control + background '
+                  'service as soon as the ring connects',
+                ),
+                value: cfg.autoStartGestures,
+                onChanged: (v) => unawaited(
+                  ring.updateGestureConfig(cfg.copyWith(autoStartGestures: v)),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
         const _Heading('Always-On Ring Automations'),
         _Card(
           child: Column(
@@ -361,9 +400,9 @@ class _SensorLabScreenState extends State<SensorLabScreen>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Uses 3D gravity-removed acceleration + jerk so finger taps '
-                'register in any orientation. Single taps wait 0.9 s so double '
-                'taps never double-fire.',
+                'Separates crisp positive finger impacts (taps & double taps) '
+                'from sustained 3D hand rotations ≥ ${acc.flickAngleDeg.toStringAsFixed(0)}° '
+                '(wrist flicks) — so hard double taps never misfire as flicks.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: colors.onSurfaceVariant,
                 ),
@@ -374,10 +413,14 @@ class _SensorLabScreenState extends State<SensorLabScreen>
                 runSpacing: 10,
                 children: [
                   _Stat(
-                    '3D impulse',
+                    'Impact',
                     acc.latestImpulseG != null
                         ? '${acc.latestImpulseG!.toStringAsFixed(2)} g'
                         : '—',
+                  ),
+                  _Stat(
+                    'Rotation',
+                    '${acc.latestAngleDeg.toStringAsFixed(0)}°',
                   ),
                   _Stat(
                     'Threshold',
@@ -407,17 +450,17 @@ class _SensorLabScreenState extends State<SensorLabScreen>
                     for (var i = 0; i < acc.impulseTrace.length; i++)
                       (x: i, value: acc.impulseTrace[i]),
                   ],
-                  label: 'Live 25 Hz 3D impulse with tap threshold',
+                  label: 'Live 25 Hz positive impact (g) with tap threshold',
                   color: colors.secondary,
                   threshold: acc.tapThresholdG,
                   thresholdColor: colors.primary,
                   minValue: 0,
-                  maxValue: 1.2,
+                  maxValue: 1.6,
                 ),
                 const SizedBox(height: 4),
                 Text(
                   'Dashed line = tap threshold (${acc.tapThresholdG.toStringAsFixed(2)} g). '
-                  'Lower sensitivity if everyday movement triggers taps.',
+                  'Wrist flicks require rotating your hand ≥ ${acc.flickAngleDeg.toStringAsFixed(0)}°.',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: colors.onSurfaceVariant,
                   ),
@@ -500,6 +543,29 @@ class _SensorLabScreenState extends State<SensorLabScreen>
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: colors.onSurfaceVariant,
                 ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '1-Tap Presets',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final preset in GestureActionConfig.presets)
+                    ChoiceChip(
+                      label: Text(preset.title),
+                      tooltip: preset.subtitle,
+                      selected: preset.matches(cfg),
+                      onSelected: (_) => unawaited(
+                        ring.updateGestureConfig(cfg.applyPreset(preset)),
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(height: 10),
               SwitchListTile(

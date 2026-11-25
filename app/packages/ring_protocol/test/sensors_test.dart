@@ -28,7 +28,7 @@ void main() {
     expect(analyzer.waveform, isNotEmpty);
   });
 
-  test('GestureDetector3D distinguishes rest, sideways double-tap, deferred tap, and flick', () {
+  test('GestureDetector3D separates wind-up taps, hard double-taps, and 3D rotation flicks', () {
     final detector = GestureDetector3D();
     final events = <GestureEvent>[];
     void feed(AccSample sample) {
@@ -38,44 +38,49 @@ void main() {
 
     // 1 second of resting 1g
     for (var i = 0; i < 25; i++) {
-      feed((x: 0, y: 0, z: 1024));
+      feed((x: 0, y: 0, z: -1024));
     }
     expect(events, isEmpty);
 
-    // Sideways pinch/tap perpendicular to gravity (|mag - 1g| is only 0.11g,
-    // but 3D linear accel + jerk is ~0.5g), followed 240 ms later by tap 2.
-    feed((x: 520, y: 0, z: 1024));
-    for (var i = 0; i < 5; i++) {
-      feed((x: 0, y: 0, z: 1024));
+    // Real single tap WITH wind-up finger lift (0.55g) + hard 2.4g impact ->
+    // MUST register as a single tap (NEVER double-tap and NEVER wrist flick!).
+    feed((x: 0, y: 0, z: -560));
+    feed((x: 120, y: 0, z: -2400));
+    for (var i = 0; i < 24; i++) {
+      feed((x: 0, y: 0, z: -1024));
     }
-    feed((x: 520, y: 0, z: 1024));
-    for (var i = 0; i < 5; i++) {
-      feed((x: 0, y: 0, z: 1024));
-    }
-    expect(events.map((e) => e.gesture), [RingGesture.doubleTap]);
-    expect(detector.doubleTapCount, 1);
-    expect(detector.tapCount, 0);
+    expect(events.map((e) => e.gesture), [RingGesture.tap]);
+    expect(detector.tapCount, 1);
+    expect(detector.doubleTapCount, 0);
+    expect(detector.flickCount, 0);
 
-    // Isolated single tap emits once the 880 ms double-tap window elapses.
-    feed((x: 0, y: 0, z: 1550));
-    for (var i = 0; i < 26; i++) {
-      feed((x: 0, y: 0, z: 1024));
+    // Hard double tap (320 ms = 8 samples apart, with wind-up lift before tap 2)
+    // -> MUST register ONLY doubleTap (never flick, never extra tap).
+    feed((x: 50, y: 0, z: -1650));
+    for (var i = 0; i < 6; i++) {
+      feed((x: 0, y: 0, z: -1024));
+    }
+    feed((x: 0, y: 0, z: -600)); // wind-up lift
+    feed((x: 60, y: 0, z: -1750));
+    for (var i = 0; i < 20; i++) {
+      feed((x: 0, y: 0, z: -1024));
     }
     expect(events.map((e) => e.gesture), [
-      RingGesture.doubleTap,
       RingGesture.tap,
+      RingGesture.doubleTap,
     ]);
-    expect(detector.tapCount, 1);
+    expect(detector.doubleTapCount, 1);
 
-    // High-energy wrist flick.
-    feed((x: 2000, y: 1200, z: 1200));
+    // Genuine 3D wrist flick (60 deg gravity rotation held for 160 ms)
     for (var i = 0; i < 5; i++) {
-      feed((x: 0, y: 0, z: 1024));
+      feed((x: 880, y: 0, z: -512));
+    }
+    for (var i = 0; i < 15; i++) {
+      feed((x: 0, y: 0, z: -1024));
     }
     expect(events.last.gesture, RingGesture.flick);
     expect(detector.flickCount, 1);
 
-    // Sensitivity levels shift thresholds monotonically.
     expect(
       GestureSensitivity.high.tapThresholdG,
       lessThan(GestureSensitivity.medium.tapThresholdG),

@@ -70,6 +70,16 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <service
+            android:name=".RingQuickTileService"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="Ring Control"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
             android:name=".RingAccessibilityService"
             android:exported="false"
             android:label="Ring Companion Gestures"

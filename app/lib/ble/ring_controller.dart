@@ -34,11 +34,14 @@ final class RingController extends ChangeNotifier {
     DeviceActionChannel? deviceActions,
   }) : healthExporter = healthExporter ?? HealthExporter(database),
        deviceActions = deviceActions ?? DeviceActionChannel() {
-    this.deviceActions.setStopFromNotificationHandler(() async {
-      if (accStreaming) {
-        await setAccelerometer(false);
-      }
-    });
+    this.deviceActions.setNativeHandlers(
+      onStopFromNotification: () async {
+        if (accStreaming) {
+          await setAccelerometer(false);
+        }
+      },
+      onToggleFromTile: _handleTileToggle,
+    );
     _subscription = _ble.events.listen(
       _event,
       onError: (Object error) {
@@ -48,6 +51,7 @@ final class RingController extends ChangeNotifier {
     unawaited(
       _enqueue(() async {
         autoHealthExport = await database.getAutoHealthExport();
+        autoConnect = (await database.getPreference(_autoConnectKey)) != 'false';
         gestureConfig = GestureActionConfig.decode(
           await database.getPreference(_gestureConfigKey),
         );
@@ -56,14 +60,32 @@ final class RingController extends ChangeNotifier {
         );
         gestureDetector.sensitivity = gestureConfig.sensitivity;
         accessibilityEnabled = await this.deviceActions.isAccessibilityEnabled();
+        if (await this.deviceActions.consumePendingTileToggle()) {
+          _pendingTileToggle = true;
+        }
         final last = await database.latestDevice();
-        if (last != null) _loadDevice(last.id, last.name, last.firmware);
+        if (last != null) {
+          _loadDevice(last.id, last.name, last.firmware);
+          if (last.platformId.isNotEmpty) {
+            _lastKnownRing = (
+              id: last.platformId,
+              name: last.name,
+              rssi: 0,
+              source: 'bonded',
+            );
+            if (autoConnect || _pendingTileToggle) {
+              unawaited(_autoConnectRemembered());
+            }
+          }
+        }
+        _syncTileState();
       }),
     );
   }
 
   static const _gestureConfigKey = 'gesture_action_config';
   static const _smartConfigKey = 'smart_automations_config';
+  static const _autoConnectKey = 'auto_connect_ring';
   static const _ringOffAlertId = 7111;
   static const _lowBatteryAlertId = 7112;
 
@@ -125,6 +147,68 @@ final class RingController extends ChangeNotifier {
   int _warmVasodilationStreak = 0;
   bool _dozePausedThisStreak = false;
   DateTime? _lastBiometricBroadcastAt;
+  bool autoConnect = true;
+  NearbyRing? _lastKnownRing;
+  bool _pendingTileToggle = false;
+
+  bool get canReconnect =>
+      _lastKnownRing != null && state == LinkState.disconnected;
+
+  Future<void> setAutoConnect(bool enabled) async {
+    autoConnect = enabled;
+    await database.setPreference(_autoConnectKey, enabled ? 'true' : 'false');
+    _publish();
+  }
+
+  Future<void> reconnect() async {
+    final ring = _lastKnownRing;
+    if (ring == null || state != LinkState.disconnected) return;
+    await connect(ring);
+  }
+
+  Future<void> _autoConnectRemembered() => _enqueue(() async {
+    final ring = _lastKnownRing;
+    if (ring == null || state != LinkState.disconnected) return;
+    _selected = ring;
+    _lastKnownRing = ring;
+    message = null;
+    telemetry = null;
+    drain = null;
+    drainDetail = null;
+    _heartRate.clear();
+    state = LinkState.connecting;
+    _publish();
+    try {
+      await _ble.connect(ring.id);
+    } catch (_) {
+      // Quiet fallback on cold start (e.g. Bluetooth off or ring out of range).
+      _selected = null;
+      state = LinkState.disconnected;
+      _syncTileState();
+    }
+  });
+
+  Future<void> _handleTileToggle() async {
+    if (connected) {
+      await setAccelerometer(!accStreaming);
+      return;
+    }
+    final ring = _lastKnownRing;
+    if (ring != null && state == LinkState.disconnected) {
+      _pendingTileToggle = true;
+      await connect(ring);
+    }
+  }
+
+  void _syncTileState() {
+    unawaited(
+      deviceActions.updateTileState(
+        connected: connected,
+        gesturesActive: accStreaming,
+        summary: gestureConfig.notificationSummary,
+      ),
+    );
+  }
 
   Future<void> updateSmartConfig(SmartAutomationConfig next) async {
     smartConfig = next;
@@ -152,6 +236,7 @@ final class RingController extends ChangeNotifier {
         summary: next.notificationSummary,
       );
     }
+    _syncTileState();
     _publish();
   }
 
@@ -186,8 +271,11 @@ final class RingController extends ChangeNotifier {
       webhookUrl: gestureConfig.webhookUrl,
     );
     lastGestureActionAt = DateTime.now();
+    final metric = event.gesture == RingGesture.flick
+        ? '${event.peakG.toStringAsFixed(0)}°'
+        : '${event.peakG.toStringAsFixed(2)} g';
     lastGestureActionDetail =
-        '${event.gesture.label} (${event.peakG.toStringAsFixed(2)} g) → ${outcome.detail}';
+        '${event.gesture.label} ($metric) → ${outcome.detail}';
     _publish();
   }
   bool autoHealthExport = true;
@@ -435,11 +523,13 @@ final class RingController extends ChangeNotifier {
           summary: gestureConfig.notificationSummary,
         );
       }
+      _syncTileState();
     } else {
       await _send(RingCommands.mode(RingMode.idle));
       accStreaming = false;
       await _ble.setHighPriority(false);
       await deviceActions.setBackgroundService(active: false, summary: '');
+      _syncTileState();
       await _send(RingCommands.telemetry());
       _startPolling();
     }
@@ -636,8 +726,14 @@ final class RingController extends ChangeNotifier {
             paramValues[RingParam.autoSports] = frame.sportsMonitor ? 1 : 0;
             paramValues[RingParam.osaPlan] = frame.monitorPlanStatus;
             state = LinkState.ready;
+            _syncTileState();
             await _send(RingCommands.telemetry());
-            _startPolling();
+            if (_pendingTileToggle || gestureConfig.autoStartGestures) {
+              _pendingTileToggle = false;
+              unawaited(setAccelerometer(true));
+            } else {
+              _startPolling();
+            }
           }
         case SetParamReply():
           final param = frame.param ?? pendingParam;
@@ -1147,6 +1243,7 @@ final class RingController extends ChangeNotifier {
     accStreaming = false;
     unawaited(deviceActions.setBackgroundService(active: false, summary: ''));
     state = LinkState.disconnected;
+    _syncTileState();
   }
 
   Future<void> _enqueue(Future<void> Function() operation) {

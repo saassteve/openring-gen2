@@ -153,9 +153,19 @@ class _ConnectionHeader extends StatelessWidget {
                 ),
               ),
               switch (ring.state) {
-                LinkState.disconnected => FilledButton.tonal(
-                  onPressed: ring.scan,
-                  child: const Text('Scan'),
+                LinkState.disconnected => Wrap(
+                  spacing: 6,
+                  children: [
+                    if (ring.canReconnect)
+                      FilledButton.tonal(
+                        onPressed: ring.reconnect,
+                        child: const Text('Reconnect'),
+                      ),
+                    OutlinedButton(
+                      onPressed: ring.scan,
+                      child: const Text('Scan'),
+                    ),
+                  ],
                 ),
                 LinkState.scanning => TextButton(
                   onPressed: ring.stopScan,

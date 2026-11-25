@@ -22,8 +22,8 @@ enum RingDeviceAction {
     requiresAccessibility: false,
   ),
   volumeUp(
-    'Volume up / Camera shutter',
-    'Raises media volume (triggers shutter in many camera apps)',
+    'Volume up',
+    'Raises media volume',
     requiresAccessibility: false,
   ),
   volumeDown(
@@ -33,8 +33,18 @@ enum RingDeviceAction {
   ),
   toggleFlashlight(
     'Toggle flashlight',
-    'Switches rear camera LED torch on or off',
+    'Switches rear camera LED torch on or off (works screen off)',
     requiresAccessibility: false,
+  ),
+  findPhone(
+    'Ring my phone loudly',
+    'Plays alarm ringtone + vibration even on Silent/Vibrate (trigger again to silence)',
+    requiresAccessibility: false,
+  ),
+  cameraShutter(
+    'Snap photo (Camera shutter)',
+    'Taps the shutter button in Camera / Z Flip Flex Mode tripod shots',
+    requiresAccessibility: true,
   ),
   scrollDown(
     'Scroll down / Next video',
@@ -96,11 +106,35 @@ enum RingDeviceAction {
   }
 }
 
+final class GesturePreset {
+  const GesturePreset({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.tapAction,
+    required this.doubleTapAction,
+    required this.flickAction,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final RingDeviceAction tapAction;
+  final RingDeviceAction doubleTapAction;
+  final RingDeviceAction flickAction;
+
+  bool matches(GestureActionConfig cfg) =>
+      cfg.tapAction == tapAction &&
+      cfg.doubleTapAction == doubleTapAction &&
+      cfg.flickAction == flickAction;
+}
+
 final class GestureActionConfig {
   const GestureActionConfig({
     this.sensitivity = GestureSensitivity.medium,
     this.actionsEnabled = true,
     this.backgroundService = true,
+    this.autoStartGestures = false,
     this.hapticFeedback = true,
     this.tapAction = RingDeviceAction.none,
     this.doubleTapAction = RingDeviceAction.mediaPlayPause,
@@ -108,14 +142,57 @@ final class GestureActionConfig {
     this.webhookUrl = '',
   });
 
+  static const List<GesturePreset> presets = [
+    GesturePreset(
+      id: 'music',
+      title: 'Music & Podcasts',
+      subtitle: 'Double-tap Play/Pause · Flick Next track',
+      tapAction: RingDeviceAction.none,
+      doubleTapAction: RingDeviceAction.mediaPlayPause,
+      flickAction: RingDeviceAction.mediaNext,
+    ),
+    GesturePreset(
+      id: 'finder',
+      title: 'Find Phone & Torch',
+      subtitle: 'Double-tap Flashlight · Flick Ring phone loudly',
+      tapAction: RingDeviceAction.none,
+      doubleTapAction: RingDeviceAction.toggleFlashlight,
+      flickAction: RingDeviceAction.findPhone,
+    ),
+    GesturePreset(
+      id: 'camera',
+      title: 'Hands-Free Camera',
+      subtitle: 'Double-tap Snap photo · Flick Flashlight',
+      tapAction: RingDeviceAction.none,
+      doubleTapAction: RingDeviceAction.cameraShutter,
+      flickAction: RingDeviceAction.toggleFlashlight,
+    ),
+    GesturePreset(
+      id: 'reader',
+      title: 'Hands-Free Reader',
+      subtitle: 'Double-tap Next / Scroll · Flick Previous',
+      tapAction: RingDeviceAction.none,
+      doubleTapAction: RingDeviceAction.scrollDown,
+      flickAction: RingDeviceAction.scrollUp,
+    ),
+  ];
+
   final GestureSensitivity sensitivity;
   final bool actionsEnabled;
   final bool backgroundService;
+  final bool autoStartGestures;
   final bool hapticFeedback;
   final RingDeviceAction tapAction;
   final RingDeviceAction doubleTapAction;
   final RingDeviceAction flickAction;
   final String webhookUrl;
+
+  GestureActionConfig applyPreset(GesturePreset preset) => copyWith(
+    actionsEnabled: true,
+    tapAction: preset.tapAction,
+    doubleTapAction: preset.doubleTapAction,
+    flickAction: preset.flickAction,
+  );
 
   RingDeviceAction actionFor(RingGesture gesture) => switch (gesture) {
     RingGesture.tap => tapAction,
@@ -153,6 +230,7 @@ final class GestureActionConfig {
     GestureSensitivity? sensitivity,
     bool? actionsEnabled,
     bool? backgroundService,
+    bool? autoStartGestures,
     bool? hapticFeedback,
     RingDeviceAction? tapAction,
     RingDeviceAction? doubleTapAction,
@@ -162,6 +240,7 @@ final class GestureActionConfig {
     sensitivity: sensitivity ?? this.sensitivity,
     actionsEnabled: actionsEnabled ?? this.actionsEnabled,
     backgroundService: backgroundService ?? this.backgroundService,
+    autoStartGestures: autoStartGestures ?? this.autoStartGestures,
     hapticFeedback: hapticFeedback ?? this.hapticFeedback,
     tapAction: tapAction ?? this.tapAction,
     doubleTapAction: doubleTapAction ?? this.doubleTapAction,
@@ -173,6 +252,7 @@ final class GestureActionConfig {
     'sensitivity': sensitivity.name,
     'actionsEnabled': actionsEnabled,
     'backgroundService': backgroundService,
+    'autoStartGestures': autoStartGestures,
     'hapticFeedback': hapticFeedback,
     'tapAction': tapAction.name,
     'doubleTapAction': doubleTapAction.name,
@@ -193,6 +273,7 @@ final class GestureActionConfig {
         sensitivity: sensitivity,
         actionsEnabled: map['actionsEnabled'] as bool? ?? true,
         backgroundService: map['backgroundService'] as bool? ?? true,
+        autoStartGestures: map['autoStartGestures'] as bool? ?? false,
         hapticFeedback: map['hapticFeedback'] as bool? ?? true,
         tapAction: RingDeviceAction.parse(
           map['tapAction'] as String?,
@@ -312,13 +393,49 @@ class DeviceActionChannel {
 
   bool get supported => supportedOverride ?? Platform.isAndroid;
 
-  void setStopFromNotificationHandler(Future<void> Function() onStop) {
+  void setNativeHandlers({
+    required Future<void> Function() onStopFromNotification,
+    required Future<void> Function() onToggleFromTile,
+  }) {
     if (!supported) return;
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'stopGesturesFromNotification') {
-        await onStop();
+        await onStopFromNotification();
+      } else if (call.method == 'toggleGesturesFromTile') {
+        await onToggleFromTile();
       }
     });
+  }
+
+  Future<void> updateTileState({
+    required bool connected,
+    required bool gesturesActive,
+    required String summary,
+  }) async {
+    if (!supported) return;
+    try {
+      await _channel.invokeMethod<bool>('updateTileState', {
+        'connected': connected,
+        'gesturesActive': gesturesActive,
+        'summary': summary,
+      });
+    } on MissingPluginException {
+      // Ignore in widget tests.
+    } on PlatformException {
+      // Non-fatal.
+    }
+  }
+
+  Future<bool> consumePendingTileToggle() async {
+    if (!supported) return false;
+    try {
+      return await _channel.invokeMethod<bool>('consumePendingTileToggle') ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
   }
 
   void dispose() {

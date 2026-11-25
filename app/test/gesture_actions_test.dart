@@ -85,4 +85,26 @@ void main() {
       'http://homeassistant.local:8123/api/webhook/events',
     );
   });
+
+  test('GestureActionConfig presets and autoStartGestures round-trip', () {
+    const base = GestureActionConfig();
+    expect(base.autoStartGestures, isFalse);
+
+    final finder = GestureActionConfig.presets
+        .firstWhere((p) => p.id == 'finder');
+    final applied = base.applyPreset(finder).copyWith(autoStartGestures: true);
+    expect(applied.doubleTapAction, RingDeviceAction.toggleFlashlight);
+    expect(applied.flickAction, RingDeviceAction.findPhone);
+    expect(finder.matches(applied), isTrue);
+
+    final camera = GestureActionConfig.presets
+        .firstWhere((p) => p.id == 'camera');
+    final camApplied = applied.applyPreset(camera);
+    expect(camApplied.doubleTapAction, RingDeviceAction.cameraShutter);
+    expect(camApplied.usesAccessibility, isTrue);
+
+    final decoded = GestureActionConfig.decode(applied.encode());
+    expect(decoded.autoStartGestures, isTrue);
+    expect(decoded.flickAction, RingDeviceAction.findPhone);
+  });
 }

@@ -13,7 +13,10 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -42,6 +45,8 @@ internal class DeviceActionBridge(
         const val ACTION_RING_GESTURE = "com.ringcompanion.app.ACTION_RING_GESTURE"
         const val ACTION_RING_EVENT = "com.ringcompanion.app.ACTION_RING_EVENT"
         const val ALERTS_CHANNEL_ID = "ring_alerts"
+        const val ACTION_STOP_FIND_PHONE = "com.ringcompanion.app.ACTION_STOP_FIND_PHONE"
+        const val FIND_PHONE_NOTIFICATION_ID = 7119
     }
 
     private val channel = MethodChannel(messenger, DEVICE_ACTIONS_CHANNEL)
@@ -52,6 +57,9 @@ internal class DeviceActionBridge(
     private var torchCameraId: String? = null
     private var torchEnabled = false
     private var pendingServiceSummary: String? = null
+    private var activeFinderRingtone: Ringtone? = null
+    private var finderStopRunnable: Runnable? = null
+    private var pendingTileToggle = false
 
     private val torchCallback = object : CameraManager.TorchCallback() {
         override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
@@ -61,18 +69,34 @@ internal class DeviceActionBridge(
 
     private val stopReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == RingGestureService.ACTION_STOP_FROM_NOTIFICATION) {
-                stopForegroundService()
-                main.post { channel.invokeMethod("stopGesturesFromNotification", null) }
+            when (intent.action) {
+                RingGestureService.ACTION_STOP_FROM_NOTIFICATION -> {
+                    stopForegroundService()
+                    RingQuickTileService.gesturesActive = false
+                    RingQuickTileService.requestRefresh(activity)
+                    main.post { channel.invokeMethod("stopGesturesFromNotification", null) }
+                }
+                RingQuickTileService.ACTION_TILE_TOGGLE_GESTURES -> {
+                    main.post { channel.invokeMethod("toggleGesturesFromTile", null) }
+                }
+                ACTION_STOP_FIND_PHONE -> {
+                    stopFindPhone()
+                }
             }
         }
     }
 
     init {
         channel.setMethodCallHandler(this)
+        RingQuickTileService.appRunning = true
+        RingQuickTileService.requestRefresh(activity)
         torchCameraId = findBackFlashCamera()
         runCatching { camera?.registerTorchCallback(torchCallback, main) }
-        val filter = IntentFilter(RingGestureService.ACTION_STOP_FROM_NOTIFICATION)
+        val filter = IntentFilter().apply {
+            addAction(RingGestureService.ACTION_STOP_FROM_NOTIFICATION)
+            addAction(RingQuickTileService.ACTION_TILE_TOGGLE_GESTURES)
+            addAction(ACTION_STOP_FIND_PHONE)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             activity.registerReceiver(stopReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -150,7 +174,27 @@ internal class DeviceActionBridge(
                 }
                 result.success(true)
             }
+            "updateTileState" -> {
+                RingQuickTileService.ringConnected = call.argument<Boolean>("connected") ?: false
+                RingQuickTileService.gesturesActive = call.argument<Boolean>("gesturesActive") ?: false
+                RingQuickTileService.summarySubtitle = call.argument<String>("summary") ?: ""
+                RingQuickTileService.requestRefresh(activity)
+                result.success(true)
+            }
+            "consumePendingTileToggle" -> {
+                val pending = pendingTileToggle
+                pendingTileToggle = false
+                result.success(pending)
+            }
             else -> result.notImplemented()
+        }
+    }
+
+    fun notifyTileToggle(fromColdLaunch: Boolean) {
+        if (fromColdLaunch) {
+            pendingTileToggle = true
+        } else {
+            main.post { channel.invokeMethod("toggleGesturesFromTile", null) }
         }
     }
 
@@ -250,7 +294,11 @@ internal class DeviceActionBridge(
                     ),
                 )
             }
-            "scrollDown", "scrollUp", "nextPage", "prevPage", "screenshot", "back" -> {
+            "findPhone" -> {
+                val detail = triggerFindPhone()
+                result.success(mapOf("ok" to true, "detail" to detail))
+            }
+            "cameraShutter", "scrollDown", "scrollUp", "nextPage", "prevPage", "screenshot", "back" -> {
                 val service = RingAccessibilityService.instance
                 if (service == null) {
                     result.success(
@@ -262,6 +310,7 @@ internal class DeviceActionBridge(
                     return
                 }
                 val ok = when (action) {
+                    "cameraShutter" -> service.performCameraShutter()
                     "scrollDown" -> service.performScrollDown()
                     "scrollUp" -> service.performScrollUp()
                     "nextPage" -> service.performNextPage()
@@ -293,6 +342,101 @@ internal class DeviceActionBridge(
             }
             else -> result.success(mapOf("ok" to false, "detail" to "Unknown action: $action"))
         }
+    }
+
+    private fun triggerFindPhone(): String {
+        if (activeFinderRingtone?.isPlaying == true) {
+            stopFindPhone()
+            return "Phone finder silenced"
+        }
+        stopFindPhone()
+        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val ringtone = runCatching { RingtoneManager.getRingtone(activity, uri) }.getOrNull()
+        if (ringtone != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                ringtone.audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            }
+            runCatching { ringtone.play() }
+            activeFinderRingtone = ringtone
+        }
+        vibrateAlarmPattern()
+        showFindPhoneNotification()
+        finderStopRunnable = Runnable { stopFindPhone() }.also { main.postDelayed(it, 8_000L) }
+        return "Ringing phone loudly (8s)"
+    }
+
+    private fun stopFindPhone() {
+        finderStopRunnable?.let(main::removeCallbacks)
+        finderStopRunnable = null
+        runCatching { activeFinderRingtone?.stop() }
+        activeFinderRingtone = null
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            activity.getSystemService(VibratorManager::class.java)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            activity.getSystemService(Vibrator::class.java)
+        }
+        runCatching { vibrator?.cancel() }
+        val nm = activity.getSystemService(NotificationManager::class.java)
+        runCatching { nm?.cancel(FIND_PHONE_NOTIFICATION_ID) }
+    }
+
+    private fun vibrateAlarmPattern() {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            activity.getSystemService(VibratorManager::class.java)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            activity.getSystemService(Vibrator::class.java)
+        } ?: return
+        if (!vibrator.hasVibrator()) return
+        val pattern = longArrayOf(0, 350, 180, 350, 180, 350, 300, 350, 180, 350)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching { vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1)) }
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching { vibrator.vibrate(pattern, -1) }
+        }
+    }
+
+    private fun showFindPhoneNotification() {
+        val manager = activity.getSystemService(NotificationManager::class.java) ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            manager.getNotificationChannel(ALERTS_CHANNEL_ID) == null
+        ) {
+            val channel = NotificationChannel(
+                ALERTS_CHANNEL_ID,
+                "Ring Smart Alerts",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            )
+            manager.createNotificationChannel(channel)
+        }
+        val silenceIntent = Intent(ACTION_STOP_FIND_PHONE).setPackage(activity.packageName)
+        val silencePending = PendingIntent.getBroadcast(
+            activity,
+            FIND_PHONE_NOTIFICATION_ID,
+            silenceIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(activity, ALERTS_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(activity)
+        }
+        val notification = builder
+            .setContentTitle("Found your phone!")
+            .setContentText("Triggered from your smart ring — tap Silence to stop.")
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setAutoCancel(true)
+            .setContentIntent(silencePending)
+            .addAction(Notification.Action.Builder(null, "Silence", silencePending).build())
+            .build()
+        runCatching { manager.notify(FIND_PHONE_NOTIFICATION_ID, notification) }
     }
 
     private fun dispatchMediaKey(keyCode: Int) {
@@ -426,7 +570,12 @@ internal class DeviceActionBridge(
     }
 
     fun dispose() {
+        stopFindPhone()
         stopForegroundService()
+        RingQuickTileService.appRunning = false
+        RingQuickTileService.ringConnected = false
+        RingQuickTileService.gesturesActive = false
+        RingQuickTileService.requestRefresh(activity)
         runCatching { camera?.unregisterTorchCallback(torchCallback) }
         runCatching { activity.unregisterReceiver(stopReceiver) }
         ioExecutor.shutdownNow()

@@ -51,6 +51,17 @@ class RingAccessibilityService : AccessibilityService() {
             false
         }
 
+    fun performCameraShutter(): Boolean {
+        val metrics = resources.displayMetrics
+        val landscape = metrics.widthPixels > metrics.heightPixels
+        val x = if (landscape) metrics.widthPixels * 0.88f else metrics.widthPixels * 0.50f
+        val y = if (landscape) metrics.heightPixels * 0.50f else metrics.heightPixels * 0.84f
+        val path = Path().apply { moveTo(x, y) }
+        val stroke = GestureDescription.StrokeDescription(path, 0L, 60L)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        return dispatchGesture(gesture, null, null)
+    }
+
     private fun swipe(x1: Float, y1: Float, x2: Float, y2: Float): Boolean {
         val metrics = resources.displayMetrics
         val path = Path().apply {
