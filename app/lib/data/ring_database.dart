@@ -626,6 +626,47 @@ class RingDatabase extends _$RingDatabase {
       .watchSingleOrNull()
       .map((row) => row == null ? true : row.value != 'false');
 
+  Future<CircadianInsights> loadCircadianInsights({String? deviceId}) async {
+    final epochQuery = select(epochs)
+      ..orderBy([(row) => OrderingTerm.asc(row.cursor)]);
+    if (deviceId != null) {
+      epochQuery.where((row) => row.deviceId.equals(deviceId));
+    }
+    final thermalQuery = select(thermalBlocks)
+      ..orderBy([(row) => OrderingTerm.asc(row.cursor)]);
+    if (deviceId != null) {
+      thermalQuery.where((row) => row.deviceId.equals(deviceId));
+    }
+    final storedEpochs = await epochQuery.get();
+    final storedThermals = await thermalQuery.get();
+    final decodedEpochs = <EpochRecord>[];
+    for (final row in storedEpochs) {
+      final page = RingFrame.decode([
+        0x4c,
+        0,
+        0,
+        ...row.raw,
+        [0x4c, 0, 0, ...row.raw].reduce((a, b) => a ^ b),
+      ]) as HistoryPage;
+      decodedEpochs.add(page.records.single as EpochRecord);
+    }
+    final decodedThermals = <ThermalBlock>[];
+    for (final row in storedThermals) {
+      final page = RingFrame.decode([
+        0x47,
+        0,
+        0,
+        ...row.raw,
+        [0x47, 0, 0, ...row.raw].reduce((a, b) => a ^ b),
+      ]) as HistoryPage;
+      decodedThermals.add(page.records.single as ThermalBlock);
+    }
+    return CircadianInsights.fromRecords(
+      epochs: decodedEpochs,
+      thermalBlocks: decodedThermals,
+    );
+  }
+
   static double _mean(List<double> samples) =>
       samples.reduce((a, b) => a + b) / samples.length;
 }

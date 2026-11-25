@@ -113,6 +113,14 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var batteryMode = false
     var noAck = false
     var batteryInterval: Double = 60
+    var gestureMode = false
+    var onTapCmd: String? = nil
+    var onDoubleTapCmd: String? = nil
+    var onFlickCmd: String? = nil
+    var gBaseline: Double = 1.0
+    var gSampleIdx = 0
+    var gLastImpulse = -100
+    var gPendingTap: Int? = nil
 
     var histCh = 0
     var pages = 0
@@ -132,12 +140,14 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var pollTimer: Timer?
 
     init(nameSub: String, seconds: Double, scanOnly: Bool, cmds: [[UInt8]], liveMode: Bool = false,
-         tracePath: String? = nil, poll07: Double = 0, poll07Count: Int = 0, ppg13: Bool = false, dense: Bool = false, hist: Bool = false, noack: Bool = false, dump: Bool = false, battery: Bool = false, interval: Double = 60) {
+         tracePath: String? = nil, poll07: Double = 0, poll07Count: Int = 0, ppg13: Bool = false, dense: Bool = false, hist: Bool = false, noack: Bool = false, dump: Bool = false, battery: Bool = false, interval: Double = 60,
+         gestures: Bool = false, onTap: String? = nil, onDoubleTap: String? = nil, onFlick: String? = nil) {
         self.nameSub = nameSub; self.seconds = seconds; self.scanOnly = scanOnly
         self.pendingCmds = cmds
         self.live = liveMode
         self.poll07 = poll07; self.poll07Count = poll07Count; self.ppg13Mode = ppg13; self.denseMode = dense
         self.historyMode = hist; self.noAck = noack; self.dumpAll = dump; self.batteryMode = battery; self.batteryInterval = interval
+        self.gestureMode = gestures; self.onTapCmd = onTap; self.onDoubleTapCmd = onDoubleTap; self.onFlickCmd = onFlick
         if let tp = tracePath {
             FileManager.default.createFile(atPath: tp, contents: nil)
             trace = FileHandle(forWritingAtPath: tp)
@@ -259,7 +269,7 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         guard !sessionStarted, let w = w else { return }
         sessionStarted = true
         if let ch = pendingChallenge { answer(ch, p) }
-        if batteryMode { startBattery(p) } else if historyMode { startHistory(p) } else if denseMode { startDense(p) } else if ppg13Mode { startPpg13(p) } else if live { startLive(p) } else { runCmdSchedule() }
+        if gestureMode { startGestures(p) } else if batteryMode { startBattery(p) } else if historyMode { startHistory(p) } else if denseMode { startDense(p) } else if ppg13Mode { startPpg13(p) } else if live { startLive(p) } else { runCmdSchedule() }
         if poll07 > 0 {
             var n = 0
             let t = Timer.scheduledTimer(withTimeInterval: poll07, repeats: true) { tt in
@@ -282,13 +292,62 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
     }
 
+    func startGestures(_ p: CBPeripheral) {
+        log("GESTURES: armed (25 Hz 0x13), waiting for auth")
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(2.0, seconds - 1.5)) {
+            if let w = self.w {
+                log("GESTURES: stopping stream (06 00 00)")
+                self.tx([0x06, 0x00, 0x00], on: p, w: w)
+            }
+        }
+    }
+
+    func runGestureHook(_ shellCmd: String?, label: String, peakG: Double) {
+        log(String(format: "GESTURE: %@ (peak=%.2fg)", label, peakG))
+        guard let cmd = shellCmd, !cmd.isEmpty else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+            proc.arguments = ["-c", cmd]
+            try? proc.run()
+        }
+    }
+
+    func processAccGestures(_ b: [UInt8]) {
+        guard b.count >= 156 else { return }
+        for s in 0..<25 {
+            let off = 6 + s * 6
+            let x = Double(Int16(bitPattern: (UInt16(b[off]) << 8) | UInt16(b[off + 1]))) / 1024.0
+            let y = Double(Int16(bitPattern: (UInt16(b[off + 2]) << 8) | UInt16(b[off + 3]))) / 1024.0
+            let z = Double(Int16(bitPattern: (UInt16(b[off + 4]) << 8) | UInt16(b[off + 5]))) / 1024.0
+            let magG = sqrt(x * x + y * y + z * z)
+            let dyn = abs(magG - gBaseline)
+            if dyn < 0.25 { gBaseline = gBaseline * 0.92 + magG * 0.08 }
+            if dyn >= 0.55 && (gSampleIdx - gLastImpulse) >= 5 {
+                gLastImpulse = gSampleIdx
+                if dyn >= 1.25 {
+                    gPendingTap = nil
+                    runGestureHook(onFlickCmd, label: "flick", peakG: magG)
+                } else if let prev = gPendingTap, (gSampleIdx - prev) <= 18 {
+                    gPendingTap = nil
+                    runGestureHook(onDoubleTapCmd, label: "double-tap", peakG: magG)
+                } else {
+                    gPendingTap = gSampleIdx
+                    runGestureHook(onTapCmd, label: "tap", peakG: magG)
+                }
+            }
+            if let prev = gPendingTap, (gSampleIdx - prev) > 18 { gPendingTap = nil }
+            gSampleIdx += 1
+        }
+    }
+
     func startHistory(_ p: CBPeripheral) {
-        guard let w = w else { return }
+        guard w != nil else { return }
         let epoch: UInt64 = 1577793600
         let now = UInt64(Date().timeIntervalSince1970)
         let cursor = now > epoch ? now - epoch : 0
         let ch = UInt8(histCh)
-        var c = cursor
+        let c = cursor
         let cmd: [UInt8] = [0x02, 0x00, UInt8((c >> 24) & 0xff), UInt8((c >> 16) & 0xff), UInt8((c >> 8) & 0xff), UInt8(c & 0xff), ch, 0x01, 0x00]
         log("HIST: armed, waiting for auth")
         histCmd = cmd
@@ -583,6 +642,10 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                 log("AUTH8101 ok=\(b[2]==0) batt=\(batt)% \(mv)mV wear=\(wear) temp=\(t1)/\(t2)C mtu=\(mtu) ecoMode=\(eco) monitorStatus=\(mon) monitorPlan=\(plan) sportsMonitor=\(sports)")
             }
         }
+        if gestureMode && b.count >= 2 && b[0] == 0x81 && b[1] == 0x01 {
+            log("GESTURES: auth confirmed; starting 25 Hz ACC stream (23 03 00)")
+            tx([0x23, 0x03, 0x00], on: p, w: w)
+        }
         if historyMode && b.count >= 2 && b[0] == 0x81 && b[1] == 0x01 {  // w already unwrapped above
             log("HIST: auth table received; sending d0 + sync-open")
             tx([0xd0, 0x00, 0x00], on: p, w: w)
@@ -604,7 +667,9 @@ class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         if b[0] == 0x87 || b[0] == 0x10 { lastDesc = hexs(b) }
         switch b[0] {
-        case 0x13: ppg13Count += 1
+        case 0x13:
+            ppg13Count += 1
+            if gestureMode { processAccGestures(b) }
         case 0x12: ppg12Count += 1
         case 0x15: if b.count > 2 { hrNow = Int(b[2]) }
         default: break
@@ -634,6 +699,10 @@ var noAck = false
 var dumpAll = false
 var batteryMode = false
 var histCh = 0
+var gestureMode = false
+var onTapCmd: String? = nil
+var onDoubleTapCmd: String? = nil
+var onFlickCmd: String? = nil
 var i = 1
 while i < args.count {
     switch args[i] {
@@ -652,12 +721,17 @@ while i < args.count {
     case "--interval": batterySecs = Double(args[i+1]) ?? 60; i += 2
     case "--battery": batteryMode = true; i += 1
     case "--channel": histCh = Int(args[i+1]) ?? 0; i += 2
+    case "--gestures": gestureMode = true; i += 1
+    case "--on-tap": onTapCmd = args[i+1]; i += 2
+    case "--on-double-tap": onDoubleTapCmd = args[i+1]; i += 2
+    case "--on-flick": onFlickCmd = args[i+1]; i += 2
     default: i += 1
     }
 }
 print("selftest: \(selfTest() ? "OK" : "FAILED")")
 let probe = Probe(nameSub: nameSub, seconds: seconds, scanOnly: scanOnly, cmds: cmds, liveMode: liveMode,
-                  tracePath: tracePath, poll07: poll07, poll07Count: poll07Count, ppg13: ppg13Mode, dense: denseMode, hist: historyMode, noack: noAck, dump: dumpAll, battery: batteryMode, interval: batterySecs)
+                  tracePath: tracePath, poll07: poll07, poll07Count: poll07Count, ppg13: ppg13Mode, dense: denseMode, hist: historyMode, noack: noAck, dump: dumpAll, battery: batteryMode, interval: batterySecs,
+                  gestures: gestureMode, onTap: onTapCmd, onDoubleTap: onDoubleTapCmd, onFlick: onFlickCmd)
 if scanOnly {
     DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { log("scan time limit"); exit(0) }
 }

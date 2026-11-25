@@ -78,6 +78,7 @@ abstract final class RingCommands {
     return _command(0x05, param.code, [value]);
   }
   static Uint8List readTemperature() => _command(0x29);
+  static Uint8List startAccelerometer() => _command(0x23, 0x03);
 
   static Uint8List openHistory(int cursor, {int channel = 0}) {
     RangeError.checkValueInInterval(cursor, 0, 0xffffffff, 'cursor');

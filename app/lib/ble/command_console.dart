@@ -50,6 +50,7 @@ String commandFrameSummary(List<int> bytes, RingFrame? frame) {
   final length = '${bytes.length} bytes';
   final summary = switch (frame) {
     ModeReply() => frame.accepted ? 'Mode ACK' : 'Mode rejected',
+    AccStreamReply() => frame.accepted ? 'Accelerometer stream ACK' : 'Accelerometer stream rejected',
     TemperatureReply() =>
       'Temperature • ${frame.temperature1} / ${frame.temperature2} °C',
     TelemetryFrame() =>

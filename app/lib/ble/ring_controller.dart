@@ -87,6 +87,10 @@ final class RingController extends ChangeNotifier {
   RingParam? pendingParam;
   HistoryDrain? drain;
   String? drainDetail;
+  final PpgBiofeedbackAnalyzer ppgAnalyzer = PpgBiofeedbackAnalyzer();
+  final GestureDetector3D gestureDetector = GestureDetector3D();
+  bool accStreaming = false;
+  TemperatureReply? sensorTemperature;
   bool autoHealthExport = true;
   bool healthExporting = false;
   String? healthExportStatus;
@@ -102,12 +106,15 @@ final class RingController extends ChangeNotifier {
 
   bool get connected => state == LinkState.ready;
   bool get measuring => mode == RingMode.heartRate;
+  bool get ppgStreaming => mode == RingMode.densePpg;
   bool get syncing => drain != null && !drain!.finished;
+  String? get deviceId => _deviceId;
   List<NearbyRing> get nearby =>
       _nearby.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi));
   List<HeartRatePoint> get heartRate => List.unmodifiable(_heartRate);
   int get discardedBytes => _parser.discardedBytes;
-  bool get canSendCommands => connected && !syncing && mode == RingMode.idle;
+  bool get canSendCommands =>
+      connected && !syncing && mode == RingMode.idle && !accStreaming;
   bool get scanningCommands => _commandScan != null;
 
   void openCommandConsole() {
@@ -240,7 +247,7 @@ final class RingController extends ChangeNotifier {
   Future<void> disconnect() => _enqueue(() async {
     if (_selected == null) return;
     try {
-      if (connected && !syncing && mode != RingMode.idle) {
+      if (connected && !syncing && (mode != RingMode.idle || accStreaming)) {
         await _send(RingCommands.mode(RingMode.idle));
       }
     } finally {
@@ -257,6 +264,10 @@ final class RingController extends ChangeNotifier {
     if (!connected || syncing || measuring == enabled) return;
     _pollTimer?.cancel();
     if (enabled) {
+      if (accStreaming) {
+        await _send(RingCommands.mode(RingMode.idle));
+        accStreaming = false;
+      }
       await _initSession();
       _heartRate.clear();
     }
@@ -267,10 +278,55 @@ final class RingController extends ChangeNotifier {
     _startPolling();
   });
 
+  Future<void> setDensePpg(bool enabled) => _enqueue(() async {
+    if (!connected || syncing || ppgStreaming == enabled) return;
+    _pollTimer?.cancel();
+    if (enabled) {
+      if (accStreaming || mode != RingMode.idle) {
+        await _send(RingCommands.mode(RingMode.idle));
+        accStreaming = false;
+      }
+      await _initSession();
+      ppgAnalyzer.reset();
+      await _send(RingCommands.mode(RingMode.densePpg));
+      mode = RingMode.densePpg;
+    } else {
+      await _send(RingCommands.mode(RingMode.idle));
+      mode = RingMode.idle;
+      await _send(RingCommands.telemetry());
+      _startPolling();
+    }
+  });
+
+  Future<void> setAccelerometer(bool enabled) => _enqueue(() async {
+    if (!connected || syncing || accStreaming == enabled) return;
+    _pollTimer?.cancel();
+    if (enabled) {
+      if (mode != RingMode.idle) {
+        await _send(RingCommands.mode(RingMode.idle));
+        mode = RingMode.idle;
+      }
+      gestureDetector.reset();
+      await _send(RingCommands.startAccelerometer());
+      accStreaming = true;
+    } else {
+      await _send(RingCommands.mode(RingMode.idle));
+      accStreaming = false;
+      await _send(RingCommands.telemetry());
+      _startPolling();
+    }
+  });
+
+  Future<void> readSensorTemperature() => _enqueue(() async {
+    if (!connected || syncing) return;
+    await _send(RingCommands.readTemperature());
+  });
+
   Future<void> forceStopModes() => _enqueue(() async {
     if (!connected || syncing) return;
     await _send(RingCommands.mode(RingMode.idle));
     mode = RingMode.idle;
+    accStreaming = false;
     await _send(RingCommands.telemetry());
     _startPolling();
   });
@@ -490,11 +546,18 @@ final class RingController extends ChangeNotifier {
           }
         case HistoryPage():
           if (syncing) await _persistAndAcknowledge(frame, time);
+        case AccStreamReply():
+          if (connected && !frame.accepted) {
+            message = 'The ring rejected the accelerometer command.';
+            accStreaming = false;
+            _startPolling();
+          }
         case TemperatureReply():
-          break;
-        case PpgFrame():
-          // Raw packets are retained even when the UI has no PPG view.
-          break;
+          sensorTemperature = frame;
+        case DensePpgFrame():
+          ppgAnalyzer.addFrame(frame);
+        case RawPpgFrame():
+          gestureDetector.addFrame(frame);
       }
     }
   }
@@ -709,6 +772,7 @@ final class RingController extends ChangeNotifier {
     writeLimit = null;
     bond = null;
     mode = RingMode.idle;
+    accStreaming = false;
     state = LinkState.disconnected;
   }
 

@@ -7,6 +7,7 @@ import '../ble/ring_controller.dart';
 import '../data/health_exporter.dart';
 import '../data/ring_database.dart';
 import 'command_console_screen.dart';
+import 'sensor_lab_screen.dart';
 import 'settings_screen.dart';
 import 'sparkline.dart';
 
@@ -72,7 +73,8 @@ class _CompanionScreenState extends State<CompanionScreen> {
                 switch (selected) {
                   0 => _LiveScreen(ring),
                   1 => _HistoryScreen(ring),
-                  _ => _BatteryScreen(ring),
+                  2 => _BatteryScreen(ring),
+                  _ => SensorLabScreen(ring),
                 },
               ],
             ),
@@ -91,6 +93,10 @@ class _CompanionScreenState extends State<CompanionScreen> {
           NavigationDestination(
             icon: Icon(Icons.battery_5_bar_outlined),
             label: 'Battery',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.sensors),
+            label: 'Sensors',
           ),
         ],
       ),

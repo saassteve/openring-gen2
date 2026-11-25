@@ -45,6 +45,13 @@ void main() {
     expect(find.text('Power & background monitors'), findsOneWidget);
     expect(find.text('Auto-sports monitor'), findsOneWidget);
 
+    await tester.tap(find.text('Sensors'));
+    await tester.pumpAndSettle();
+    expect(find.text('PPG Biofeedback & Breathing'), findsOneWidget);
+    expect(find.text('25 Hz Motion & Finger Gestures'), findsOneWidget);
+    expect(find.text('Dual-NTC Thermal Gradient'), findsOneWidget);
+    expect(find.text('Hidden History: Light, Thermal & HRV'), findsOneWidget);
+
     await tester.tap(find.byTooltip('Diagnostics'));
     await tester.pumpAndSettle();
     expect(find.text('Force-stop modes'), findsOneWidget);

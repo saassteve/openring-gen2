@@ -59,6 +59,11 @@ Everything lives in one clean repository — pick the layer you need:
 ### 1. **Ring Companion** — Flutter Mobile App (`app/`)
 An independent, local-first companion app for **Android** and **iOS** with native BLE bridges and a pure-Dart protocol engine:
 - **Live dashboard** — heart rate, battery %, voltage (mV), wear state, dual-NTC temperatures, and `81 01` status flags (`ecoMode`, `sportsMonitor`, `monitorStatus`).
+- **Sensor Lab (`Sensors` tab)** — unlocks the hardware sensors consumer apps ignore:
+  - **Live PPG Biofeedback & Coherent Breathing** (`06 05 00` → `0x12`): real-time Green PPG waveform, beat-to-beat BPM, rolling RMSSD HRV, finger Perfusion Index (`PI%`), and a 5.5 s inhale / 5.5 s exhale breathing pacer.
+  - **25 Hz Motion & Finger Gestures** (`23 03 00` → `0x13`): live 3-axis accelerometer trace with tap, double-tap, and wrist-flick detection.
+  - **Live Dual-NTC Thermal Gradient** (`29 00 00` → `0xa9`): inner-vs-outer temperature delta as a vasodilation indicator.
+  - **Hidden History Insights** (`0x4c` + `0x47`): surfaces 30-second ambient light hygiene (dark/dim/bright minutes & overnight light spikes), HRV range, and mean thermal delta.
 - **History sync & local SQLite (Drift)** — drains both 2.5-minute epochs (`0x4c`) and 15-minute thermal/activity blocks (`0x47`), preserving raw frames alongside decoded records.
 - **Android Health Connect auto-export *(Android only)*** — automatically writes Heart Rate, HRV (RMSSD), SpO₂, Respiratory Rate, Steps, and dual Skin Temperature series right after every history sync with idempotent cursors (can be toggled in **Settings**). On iOS, history is stored locally in SQLite and shareable from Diagnostics (Apple HealthKit is not yet integrated).
 - **Power & Background Monitors panel** — toggle ring background features (`05 23` Auto-Sports, `05 25` Auto BP, `05 24` Sleep Pro PPG, `05 22` OSA) and track battery mV trends.
@@ -129,6 +134,11 @@ swiftc -O ringconn.swift -o ringconn
 # 4. Drain full history & decode to CSV (HR, HRV, SpO2, RR, dual-NTC temps, steps)
 ./ringconn --name "RingConn Gen2" --history --seconds 120 --trace run.jsonl
 python3 decode_history.py run.jsonl out/
+
+# 5. Use your ring as a live 25 Hz finger-gesture controller on macOS
+./ringconn --name "RingConn Gen2" --gestures --seconds 300 \
+  --on-double-tap "osascript -e 'tell application \"Music\" to playpause'" \
+  --on-flick "osascript -e 'tell application \"Music\" to next track'"
 ```
 
 Running on macOS for the first time? Read [`docs/MACOS-PAIRING.md`](docs/MACOS-PAIRING.md) — `tools/ringconn.swift` automatically writes `01 00 00` before subscribing to trigger the macOS Bluetooth pairing prompt cleanly.

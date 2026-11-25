@@ -32,6 +32,7 @@ sealed class RingFrame {
     0x85 when sub != null && sub >= 0x22 => 4,
     0x85 => 3,
     0x86 => 3,
+    0xa3 => 3,
     0xa9 => 10,
     0x10 || 0x87 => 20,
     0x11 => 5,
@@ -65,6 +66,7 @@ sealed class RingFrame {
       0x82 => HistoryOpened._(bytes),
       0x85 => SetParamReply._(bytes),
       0x86 => ModeReply._(bytes),
+      0xa3 => AccStreamReply._(bytes),
       0xa9 => TemperatureReply._(bytes),
       0x10 || 0x87 => TelemetryFrame._(bytes),
       0x11 => StatusNotice._(bytes),
@@ -111,6 +113,11 @@ final class HistoryOpened extends RingFrame {
   bool get accepted => raw[1] == 0 && raw[2] == 0;
 }
 
+
+final class AccStreamReply extends RingFrame {
+  AccStreamReply._(super.raw) : super._();
+  bool get accepted => raw[1] == 0;
+}
 
 final class TemperatureReply extends RingFrame {
   TemperatureReply._(super.raw) : super._();
