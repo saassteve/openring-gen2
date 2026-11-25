@@ -142,6 +142,14 @@ class HealthExportWrites extends Table {
   Set<Column> get primaryKey => {deviceId, metric, cursor};
 }
 
+class AppPreferences extends Table {
+  TextColumn get key => text()();
+  TextColumn get value => text()();
+
+  @override
+  Set<Column> get primaryKey => {key};
+}
+
 @DriftDatabase(
   tables: [
     Devices,
@@ -155,14 +163,17 @@ class HealthExportWrites extends Table {
     RawPackets,
     HealthExportCheckpoints,
     HealthExportWrites,
+    AppPreferences,
   ],
 )
 class RingDatabase extends _$RingDatabase {
   RingDatabase([QueryExecutor? executor])
     : super(executor ?? driftDatabase(name: 'ringconn_companion'));
 
+  static const autoHealthExportKey = 'auto_health_export';
+
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -173,6 +184,9 @@ class RingDatabase extends _$RingDatabase {
           await migrator.createTable(healthExportWrites);
           await migrator.createIndex(healthExportRun);
         });
+      }
+      if (from < 3) {
+        await migrator.createTable(appPreferences);
       }
     },
     beforeOpen: (_) async {
@@ -445,6 +459,30 @@ class RingDatabase extends _$RingDatabase {
           (notExistsQuery(checkpoint) | notExistsQuery(exported));
     }
 
+    if (metric == HealthMetric.steps) {
+      final blocks =
+          await (select(thermalBlocks)
+                ..where(
+                  (row) =>
+                      row.steps.isBiggerThanValue(0) &
+                      pending(row.deviceId, row.cursor),
+                )
+                ..orderBy([
+                  (row) => OrderingTerm.asc(row.deviceId),
+                  (row) => OrderingTerm.asc(row.cursor),
+                ])
+                ..limit(limit))
+              .get();
+      return [
+        for (final row in blocks)
+          (
+            deviceId: row.deviceId,
+            cursor: row.cursor,
+            values: [row.steps.toDouble()],
+          ),
+      ];
+    }
+
     if (metric == HealthMetric.outerTemperature ||
         metric == HealthMetric.innerTemperature) {
       final blocks =
@@ -567,6 +605,26 @@ class RingDatabase extends _$RingDatabase {
       },
     );
   });
+
+  Future<bool> getAutoHealthExport() async {
+    final row = await (select(appPreferences)
+          ..where((pref) => pref.key.equals(autoHealthExportKey)))
+        .getSingleOrNull();
+    return row == null ? true : row.value != 'false';
+  }
+
+  Future<void> setAutoHealthExport(bool enabled) => into(appPreferences)
+      .insertOnConflictUpdate(
+        AppPreferencesCompanion.insert(
+          key: autoHealthExportKey,
+          value: enabled ? 'true' : 'false',
+        ),
+      );
+
+  Stream<bool> watchAutoHealthExport() => (select(appPreferences)
+        ..where((pref) => pref.key.equals(autoHealthExportKey)))
+      .watchSingleOrNull()
+      .map((row) => row == null ? true : row.value != 'false');
 
   static double _mean(List<double> samples) =>
       samples.reduce((a, b) => a + b) / samples.length;

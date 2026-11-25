@@ -13,6 +13,7 @@
     <uses-permission android:name="android.permission.health.WRITE_OXYGEN_SATURATION" />
     <uses-permission android:name="android.permission.health.WRITE_RESPIRATORY_RATE" />
     <uses-permission android:name="android.permission.health.WRITE_SKIN_TEMPERATURE" />
+    <uses-permission android:name="android.permission.health.WRITE_STEPS" />
     <application
         android:label="Ring Companion"
         android:allowBackup="false"

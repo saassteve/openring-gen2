@@ -10,7 +10,7 @@ class HealthPermissionsActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("Ring Companion and Health Connect")
             .setMessage(
-                "When you choose Sync to Health Connect, Ring Companion writes stored " +
+                "On Android, Ring Companion can automatically export stored " +
                     "heart rate, heart rate variability, oxygen saturation, breathing rate, " +
                     "and skin temperature for the types you allow. You can view these readings " +
                     "and manage write access in Health Connect."

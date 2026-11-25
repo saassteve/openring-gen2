@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 import 'package:ringconn_companion/ble/ring_controller.dart';
+import 'package:ringconn_companion/data/health_exporter.dart';
 import 'package:ringconn_companion/data/ring_database.dart';
 import 'package:ringconn_companion/ui/companion_screen.dart';
 
@@ -63,7 +64,42 @@ void main() {
 
     await tester.tap(find.byTooltip('Settings'));
     await tester.pumpAndSettle();
-    expect(find.text('Sync to Health Connect'), findsOneWidget);
+    expect(find.text('Health Connect (Android)'), findsOneWidget);
+    expect(find.text('Android only'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Android UI exposes auto-export switch and History status', (
+    tester,
+  ) async {
+    HealthExporter.supportedPlatformOverride = true;
+    addTearDown(() => HealthExporter.supportedPlatformOverride = null);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('ringconn/ble/events'),
+      (_) async => null,
+    );
+    final controller = RingController(RingDatabase(NativeDatabase.memory()));
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: controller,
+        child: const MaterialApp(home: CompanionScreen()),
+      ),
+    );
+
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Auto-export to Android Health Connect is on.'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('Health Connect (Android)'), findsOneWidget);
+    expect(find.text('Auto-export after history sync'), findsOneWidget);
+    expect(find.text('Sync to Health Connect now'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

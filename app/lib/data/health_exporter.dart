@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:ring_protocol/ring_protocol.dart';
 
@@ -20,17 +21,27 @@ final class HealthExporter {
   static const _channel = MethodChannel('ringconn/health_connect');
   static const _batchSize = 250;
 
+  @visibleForTesting
+  static bool? supportedPlatformOverride;
+
   final RingDatabase database;
   Future<HealthExportResult>? _active;
 
   Future<HealthExportReport?> latestReport() => database.latestHealthExport();
 
-  Future<HealthExportResult> export() =>
-      _active ??= _export().whenComplete(() => _active = null);
+  /// Exports pending readings to Android Health Connect.
+  ///
+  /// When [interactive] is `true`, prompts for missing Health Connect write
+  /// permissions. When `false` (used by automatic post-sync export), checks
+  /// currently granted permissions silently without displaying any system UI.
+  Future<HealthExportResult> export({bool interactive = true}) =>
+      _active ??= _export(interactive: interactive).whenComplete(
+        () => _active = null,
+      );
 
-  Future<HealthExportResult> _export() async {
+  Future<HealthExportResult> _export({required bool interactive}) async {
     final permissions = await _channel.invokeMapMethod<String, Object?>(
-      'authorize',
+      interactive ? 'authorize' : 'checkPermissions',
     );
     if (permissions == null) {
       throw const FormatException(
@@ -100,5 +111,6 @@ final class HealthExporter {
     );
   }
 
-  static bool get supportedPlatform => Platform.isAndroid;
+  static bool get supportedPlatform =>
+      supportedPlatformOverride ?? Platform.isAndroid;
 }

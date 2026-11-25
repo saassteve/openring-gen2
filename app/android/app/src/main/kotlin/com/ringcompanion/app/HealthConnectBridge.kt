@@ -10,6 +10,7 @@ import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.RespiratoryRateRecord
 import androidx.health.connect.client.records.SkinTemperatureRecord
+import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.metadata.Device
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Percentage
@@ -40,6 +41,7 @@ internal class HealthConnectBridge(
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "authorize" -> authorize(result)
+                "checkPermissions" -> checkPermissions(result)
                 "insert" -> withClient(result) { client ->
                     val metric = requireNotNull(call.argument<String>("metric"))
                     val rows = requireNotNull(call.argument<List<Map<String, Any>>>("records"))
@@ -49,6 +51,12 @@ internal class HealthConnectBridge(
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun checkPermissions(result: MethodChannel.Result) = withClient(result) { client ->
+        val permissions = availablePermissions(client)
+        val granted = client.permissionController.getGrantedPermissions()
+        result.success(permissionReport(permissions, granted))
     }
 
     private fun authorize(result: MethodChannel.Result) = withClient(result) { client ->
@@ -89,6 +97,7 @@ internal class HealthConnectBridge(
             "hrv" to HealthPermission.getWritePermission(HeartRateVariabilityRmssdRecord::class),
             "oxygen" to HealthPermission.getWritePermission(OxygenSaturationRecord::class),
             "respiratoryRate" to HealthPermission.getWritePermission(RespiratoryRateRecord::class),
+            "steps" to HealthPermission.getWritePermission(StepsRecord::class),
         )
         if (client.features.getFeatureStatus(HealthConnectFeatures.FEATURE_SKIN_TEMPERATURE) ==
             HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
@@ -151,6 +160,14 @@ internal class HealthConnectBridge(
             "hrv" -> HeartRateVariabilityRmssdRecord(time, null, values.single(), metadata)
             "oxygen" -> OxygenSaturationRecord(time, null, Percentage(values.single()), metadata)
             "respiratoryRate" -> RespiratoryRateRecord(time, null, values.single(), metadata)
+            "steps" -> StepsRecord(
+                startTime = end.minusSeconds(900),
+                startZoneOffset = null,
+                endTime = end,
+                endZoneOffset = null,
+                count = values.single().toLong(),
+                metadata = metadata,
+            )
             "outerTemperature", "innerTemperature" -> {
                 require(values.size == 15)
                 val baseline = (values.min() + values.max()) / 2

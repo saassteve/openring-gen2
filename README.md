@@ -46,7 +46,7 @@ Smart ring hardware captures rich, high-resolution physiology every 2.5 minutes 
 | **Live 25 Hz 3-axis accelerometer** | Not available | **Live stream in normal mode** (`23 03 00` → `0x13`) |
 | **Battery diagnostics** (exact mV, % slope, dual temp) | % icon only | **Millivolt telemetry + drain-rate charts** |
 | **Background monitor power toggles** (`0x05`) | Buried / limited | **Direct toggles** (Auto-Sports, Auto BP, Sleep Pro, OSA) |
-| **Android Health Connect sync** (HR, HRV, SpO₂, RR, Skin Temp) | Partial | **Direct local sync from SQLite** |
+| **Android Health Connect auto-export** (HR, HRV, SpO₂, RR, Steps, Skin Temp) | Partial / manual | **Automatic after every sync (Android only)** |
 | **Raw BLE command console & opcode scanner** | None | **Built into the companion app** |
 | **Cloud account / telemetry required** | Yes | **None — 100% local BLE** |
 
@@ -60,7 +60,7 @@ Everything lives in one clean repository — pick the layer you need:
 An independent, local-first companion app for **Android** and **iOS** with native BLE bridges and a pure-Dart protocol engine:
 - **Live dashboard** — heart rate, battery %, voltage (mV), wear state, dual-NTC temperatures, and `81 01` status flags (`ecoMode`, `sportsMonitor`, `monitorStatus`).
 - **History sync & local SQLite (Drift)** — drains both 2.5-minute epochs (`0x4c`) and 15-minute thermal/activity blocks (`0x47`), preserving raw frames alongside decoded records.
-- **Android Health Connect export** — writes Heart Rate, HRV (RMSSD), SpO₂, Respiratory Rate, and dual Skin Temperature series directly from your device with idempotent cursors.
+- **Android Health Connect auto-export *(Android only)*** — automatically writes Heart Rate, HRV (RMSSD), SpO₂, Respiratory Rate, Steps, and dual Skin Temperature series right after every history sync with idempotent cursors (can be toggled in **Settings**). On iOS, history is stored locally in SQLite and shareable from Diagnostics (Apple HealthKit is not yet integrated).
 - **Power & Background Monitors panel** — toggle ring background features (`05 23` Auto-Sports, `05 25` Auto BP, `05 24` Sleep Pro PPG, `05 22` OSA) and track battery mV trends.
 - **Diagnostics & Raw Command Console** — send custom hex frames, run safe opcode scans, and export JSONL BLE traces.
 

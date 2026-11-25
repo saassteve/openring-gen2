@@ -19,7 +19,6 @@ class CompanionScreen extends StatefulWidget {
 
 class _CompanionScreenState extends State<CompanionScreen> {
   int selected = 0;
-  HealthExporter? _healthExporter;
 
   @override
   Widget build(BuildContext context) {
@@ -31,13 +30,16 @@ class _CompanionScreenState extends State<CompanionScreen> {
           IconButton(
             tooltip: 'Settings',
             icon: const Icon(Icons.settings_outlined),
-            onPressed: () {
-              final exporter = _healthExporter ??= HealthExporter(
-                ring.database,
+            onPressed: () async {
+              await Navigator.of(context).push<void>(
+                MaterialPageRoute(
+                  builder: (_) => SettingsScreen(ring.healthExporter),
+                ),
               );
-              Navigator.of(context).push<void>(
-                MaterialPageRoute(builder: (_) => SettingsScreen(exporter)),
-              );
+              final enabled = await ring.database.getAutoHealthExport();
+              if (enabled != ring.autoHealthExport) {
+                await ring.setAutoHealthExport(enabled);
+              }
             },
           ),
           Builder(
@@ -371,6 +373,12 @@ class _HistoryScreen extends StatelessWidget {
                   icon: const Icon(Icons.sync),
                   label: const Text('Sync ring history'),
                 ),
+              if (HealthExporter.supportedPlatform) ...[
+                const SizedBox(height: 14),
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+                _HealthAutoExportFooter(ring),
+              ],
             ],
           ),
         ),
@@ -786,6 +794,62 @@ class _Notice extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+
+class _HealthAutoExportFooter extends StatelessWidget {
+  const _HealthAutoExportFooter(this.ring);
+
+  final RingController ring;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final status =
+        ring.healthExportStatus ??
+        (ring.autoHealthExport
+            ? 'Auto-export to Android Health Connect is on.'
+            : 'Auto-export to Android Health Connect is paused.');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            if (ring.healthExporting)
+              const Padding(
+                padding: EdgeInsets.only(right: 10),
+                child: SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Icon(
+                  ring.healthNeedsPermission
+                      ? Icons.health_and_safety_outlined
+                      : Icons.monitor_heart_outlined,
+                  size: 18,
+                  color: theme.colorScheme.secondary,
+                ),
+              ),
+            Expanded(
+              child: Text(status, style: theme.textTheme.bodySmall),
+            ),
+          ],
+        ),
+        if (ring.healthNeedsPermission && !ring.healthExporting) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () => ring.exportToHealthConnect(interactive: true),
+            icon: const Icon(Icons.check_circle_outline, size: 18),
+            label: const Text('Enable Android Health Connect'),
+          ),
+        ],
+      ],
     );
   }
 }

@@ -94,15 +94,21 @@ leaving the screen, or disconnecting ends the scan. **Share command log**
 opens the share sheet for `ringconn-command-console.txt` in the app documents
 directory. The file persists across app restarts and may contain health data.
 
-## Health Connect
+## Health Connect (Android only)
 
-On Android, sync ring history, then open **Settings → Sync to Health
-Connect**. The first export requests write permissions for the supported data
-types. When you grant only some permissions, the app exports those types.
-The row shows the time and per-metric record counts from the last export
+On Android, **Auto-export after history sync** is enabled by default in
+**Settings → Health Connect (Android)**. Grant Health Connect write
+permissions once (from **Settings** or the one-tap prompt on the **History**
+tab), and every future ring history sync will silently export newly synced
+readings to Health Connect with no extra taps.
+
+When you grant only some permissions, the app exports those types. The
+Settings row shows the time and per-metric record counts from the last export
 that wrote readings. Epoch data supplies heart rate, 2.5-minute RMSSD in
-milliseconds, measured SpO₂, and respiratory rate. Each thermal block
-supplies two separate 15-sample skin temperature records, one per NTC.
+milliseconds, measured SpO₂, and respiratory rate. Each 15-minute thermal/
+activity block supplies step counts and two separate 15-sample skin
+temperature records, one per NTC. On iOS, ring history is saved locally in
+SQLite (Apple HealthKit is not yet integrated).
 The minute samples end at the block cursor. All timestamps use the ring epoch `1577793600` in UTC. Skin temperature
 requires a Health Connect version that supports it. Invalid readings and
 RMSSD outside Health Connect's 1–200 ms range are skipped.

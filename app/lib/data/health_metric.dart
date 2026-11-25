@@ -3,6 +3,7 @@ enum HealthMetric {
   hrv('HRV'),
   oxygen('SpO₂'),
   respiratoryRate('Respiratory rate'),
+  steps('Steps'),
   outerTemperature('Outer NTC'),
   innerTemperature('Inner NTC');
 

@@ -24,9 +24,11 @@ List<int> _epoch(int cursor, {int hrv = 54, int oxygen = 98}) {
   return raw;
 }
 
-List<int> _thermal(int cursor) {
+List<int> _thermal(int cursor, {int steps = 0}) {
   final raw = Uint8List(47)..[4] = 2;
-  ByteData.sublistView(raw).setUint32(0, cursor);
+  ByteData.sublistView(raw)
+    ..setUint32(0, cursor)
+    ..setUint16(6, steps);
   for (var sample = 0; sample < 15; sample++) {
     final outer = 600 + sample;
     final inner = 620 + sample;
@@ -55,7 +57,7 @@ void main() {
       ),
     );
     await _savePage(database, [0x4c, 0, 0, ..._epoch(900)]);
-    await _savePage(database, [0x47, 0, 0, ..._thermal(900)]);
+    await _savePage(database, [0x47, 0, 0, ..._thermal(900, steps: 240)]);
 
     final calls = <String, List<Map<Object?, Object?>>>{};
     final types = HealthMetric.values.map((metric) => metric.name).toList();
@@ -92,6 +94,7 @@ void main() {
     expect((await exporter.latestReport())!.counts, {
       HealthMetric.heartRate: 1,
       HealthMetric.respiratoryRate: 1,
+      HealthMetric.steps: 1,
       HealthMetric.outerTemperature: 1,
       HealthMetric.innerTemperature: 1,
     });
@@ -108,6 +111,7 @@ void main() {
     });
     expect(calls['oxygen']!.single['values'], [98.0]);
     expect(calls['respiratoryRate']!.single['values'], [12.5]);
+    expect(calls['steps']!.single['values'], [240.0]);
     expect(
       calls['outerTemperature']!.single['values'],
       List.generate(15, (i) => (600 + i) / 20),
@@ -139,11 +143,69 @@ void main() {
     final checkpoints = await database
         .select(database.healthExportCheckpoints)
         .get();
-    expect(checkpoints, hasLength(6));
+    expect(checkpoints, hasLength(7));
     expect(checkpoints.map((checkpoint) => checkpoint.maxCursor).toSet(), {
       900,
     });
     expect((await exporter.latestReport())!.counts, backfill.counts);
     expect((await HealthExporter(database).export()).counts, isEmpty);
+  });
+
+  test('non-interactive auto-export uses silent checkPermissions and never prompts', () async {
+    final database = RingDatabase(NativeDatabase.memory());
+    addTearDown(database.close);
+    await database.rememberDevice(
+      DevicesCompanion.insert(
+        id: _device,
+        platformId: 'phone-id',
+        name: 'RingConn Gen2',
+        systemId: Uint8List(6),
+        lastSeenAt: DateTime.utc(2026, 11, 24),
+      ),
+    );
+    await _savePage(database, [0x4c, 0, 0, ..._epoch(1200)]);
+
+    final methodsCalled = <String>[];
+    final inserted = <String, int>{};
+    var granted = <String>[];
+    final allTypes = HealthMetric.values.map((m) => m.name).toList();
+    const channel = MethodChannel('ringconn/health_connect');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      methodsCalled.add(call.method);
+      if (call.method == 'checkPermissions') {
+        return {'available': allTypes, 'granted': granted};
+      }
+      if (call.method == 'insert') {
+        final args = call.arguments as Map<Object?, Object?>;
+        final metric = args['metric'] as String;
+        inserted[metric] =
+            (inserted[metric] ?? 0) + (args['records'] as List).length;
+        return null;
+      }
+      fail('Unexpected method call during silent auto-export: ${call.method}');
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    final exporter = HealthExporter(database);
+    // 1. Before permissions are granted: silent check reports denied, no authorize prompt.
+    final ungranted = await exporter.export(interactive: false);
+    expect(methodsCalled, ['checkPermissions']);
+    expect(ungranted.granted, isEmpty);
+    expect(ungranted.denied, HealthMetric.values);
+    expect(ungranted.counts, isEmpty);
+
+    // 2. Once permissions are granted: silent auto-export writes all pending metrics.
+    granted = allTypes;
+    final exported = await exporter.export(interactive: false);
+    expect(methodsCalled, isNot(contains('authorize')));
+    expect(exported.counts, {
+      HealthMetric.heartRate: 1,
+      HealthMetric.hrv: 1,
+      HealthMetric.oxygen: 1,
+      HealthMetric.respiratoryRate: 1,
+    });
+    expect(inserted['hrv'], 1);
   });
 }

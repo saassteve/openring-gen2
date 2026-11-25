@@ -8,6 +8,7 @@ import 'package:flutter/services.dart' show PlatformException;
 import 'package:path_provider/path_provider.dart';
 import 'package:ring_protocol/ring_protocol.dart';
 
+import '../data/health_exporter.dart';
 import '../data/ring_database.dart';
 import 'command_console.dart';
 import 'ring_ble.dart';
@@ -25,7 +26,11 @@ typedef NearbyRing = ({String id, String name, int rssi});
 typedef HeartRatePoint = ({DateTime time, int bpm});
 
 final class RingController extends ChangeNotifier {
-  RingController(this.database, {this._ble = const RingBle()}) {
+  RingController(
+    this.database, {
+    this._ble = const RingBle(),
+    HealthExporter? healthExporter,
+  }) : healthExporter = healthExporter ?? HealthExporter(database) {
     _subscription = _ble.events.listen(
       _event,
       onError: (Object error) {
@@ -34,6 +39,7 @@ final class RingController extends ChangeNotifier {
     );
     unawaited(
       _enqueue(() async {
+        autoHealthExport = await database.getAutoHealthExport();
         final last = await database.latestDevice();
         if (last != null) _loadDevice(last.id, last.name, last.firmware);
       }),
@@ -42,6 +48,7 @@ final class RingController extends ChangeNotifier {
 
   final RingDatabase database;
   final RingBle _ble;
+  final HealthExporter healthExporter;
   final FrameReassembler _parser = FrameReassembler();
   final Map<String, NearbyRing> _nearby = {};
   final List<HeartRatePoint> _heartRate = [];
@@ -80,6 +87,16 @@ final class RingController extends ChangeNotifier {
   RingParam? pendingParam;
   HistoryDrain? drain;
   String? drainDetail;
+  bool autoHealthExport = true;
+  bool healthExporting = false;
+  String? healthExportStatus;
+  bool healthNeedsPermission = false;
+
+  Future<void> setAutoHealthExport(bool enabled) async {
+    autoHealthExport = enabled;
+    await database.setAutoHealthExport(enabled);
+    _publish();
+  }
   Stream<List<TelemetrySnapshot>>? batteryHistory;
   Stream<DrainSession?>? drainHistory;
 
@@ -536,10 +553,68 @@ final class RingController extends ChangeNotifier {
   Future<void> _finishDrain(String? detail) async {
     _historyTimer?.cancel();
     drainDetail = detail;
+    final phase = drain?.phase;
     final session = _drainSession;
     if (session != null) {
       await database.closeDrain(session, drain!, detail);
       _drainSession = null;
+    }
+    if (HealthExporter.supportedPlatform &&
+        (phase == DrainPhase.complete || phase == DrainPhase.partial) &&
+        await database.getAutoHealthExport()) {
+      unawaited(exportToHealthConnect(interactive: false));
+    }
+  }
+
+  /// Exports pending local history to Android Health Connect.
+  ///
+  /// Automatic post-sync calls pass [interactive] = `false` so no permission
+  /// dialog interrupts the user; if permissions have not been granted yet,
+  /// [healthNeedsPermission] becomes `true` for a one-tap setup prompt.
+  Future<void> exportToHealthConnect({bool interactive = true}) async {
+    if (!HealthExporter.supportedPlatform || _disposed) return;
+    healthExporting = true;
+    healthExportStatus = interactive
+        ? 'Exporting to Android Health Connect…'
+        : 'Auto-exporting to Android Health Connect…';
+    _publish();
+    try {
+      final result = await healthExporter.export(interactive: interactive);
+      if (_disposed) return;
+      final total = result.counts.values.fold(0, (sum, n) => sum + n);
+      healthNeedsPermission =
+          result.granted.isEmpty && result.denied.isNotEmpty;
+      if (healthNeedsPermission) {
+        healthExportStatus =
+            'Android Health Connect permission needed for auto-export.';
+      } else if (total > 0) {
+        final summary = [
+          for (final entry in result.counts.entries)
+            '${entry.key.label} ${entry.value}',
+        ].join(' · ');
+        healthExportStatus = interactive
+            ? 'Exported $total records to Health Connect ($summary).'
+            : 'Auto-exported $total records to Health Connect ($summary).';
+      } else if (result.failures.isNotEmpty) {
+        healthExportStatus =
+            'Health Connect export partial: ${result.failures.values.first}';
+      } else if (result.granted.isNotEmpty) {
+        healthExportStatus = 'Android Health Connect is up to date.';
+      } else {
+        healthExportStatus =
+            'Android Health Connect is unavailable on this device.';
+      }
+    } on PlatformException catch (error) {
+      if (_disposed) return;
+      healthNeedsPermission = error.code == 'permission_denied';
+      healthExportStatus =
+          error.message ?? 'Could not export to Android Health Connect.';
+    } catch (error) {
+      if (_disposed) return;
+      healthExportStatus = 'Could not export to Android Health Connect. $error';
+    } finally {
+      healthExporting = false;
+      _publish();
     }
   }
 

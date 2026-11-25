@@ -21,7 +21,8 @@ void main() {
         lastSeenAt: DateTime.utc(2026, 11, 24),
       ),
     );
-    // The version 2 migration adds only these export tables and their index.
+    // Simulate a version 1 database before export & preference tables existed.
+    await database.customStatement('DROP TABLE app_preferences');
     await database.customStatement('DROP TABLE health_export_writes');
     await database.customStatement('DROP TABLE health_export_checkpoints');
     await database.customStatement('PRAGMA user_version = 1');
@@ -35,6 +36,11 @@ void main() {
       await reopened.select(reopened.healthExportCheckpoints).get(),
       isEmpty,
     );
+    expect(await reopened.getAutoHealthExport(), isTrue);
+    await reopened.setAutoHealthExport(false);
+    expect(await reopened.getAutoHealthExport(), isFalse);
+    await reopened.setAutoHealthExport(true);
+    expect(await reopened.getAutoHealthExport(), isTrue);
   });
 
   test(
