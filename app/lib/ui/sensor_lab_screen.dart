@@ -27,6 +27,7 @@ class _SensorLabScreenState extends State<SensorLabScreen>
   Future<CircadianInsights>? _insights;
   String? _insightsDevice;
   late final TextEditingController _webhookController;
+  late final TextEditingController _eventWebhookController;
 
   @override
   void initState() {
@@ -34,6 +35,9 @@ class _SensorLabScreenState extends State<SensorLabScreen>
     WidgetsBinding.instance.addObserver(this);
     _webhookController = TextEditingController(
       text: widget.ring.gestureConfig.webhookUrl,
+    );
+    _eventWebhookController = TextEditingController(
+      text: widget.ring.smartConfig.eventWebhookUrl,
     );
     _refreshInsights();
     unawaited(widget.ring.refreshAccessibilityStatus());
@@ -57,12 +61,18 @@ class _SensorLabScreenState extends State<SensorLabScreen>
         _webhookController.text.isEmpty) {
       _webhookController.text = storedUrl;
     }
+    final storedEventUrl = widget.ring.smartConfig.eventWebhookUrl;
+    if (_eventWebhookController.text != storedEventUrl &&
+        _eventWebhookController.text.isEmpty) {
+      _eventWebhookController.text = storedEventUrl;
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _webhookController.dispose();
+    _eventWebhookController.dispose();
     super.dispose();
   }
 
@@ -81,6 +91,7 @@ class _SensorLabScreenState extends State<SensorLabScreen>
     final ppg = ring.ppgAnalyzer;
     final acc = ring.gestureDetector;
     final cfg = ring.gestureConfig;
+    final smart = ring.smartConfig;
     final temp = ring.sensorTemperature;
     final gradient = temp != null
         ? ThermalGradient(ntc1: temp.temperature1, ntc2: temp.temperature2)
@@ -94,6 +105,141 @@ class _SensorLabScreenState extends State<SensorLabScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        const _Heading('Always-On Ring Automations'),
+        _Card(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Powered by passive 0x11 hardware events & 0x10 telemetry '
+                '(wear state, battery mV, dual-NTC thermal delta) — zero extra '
+                'ring battery drain.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Pause media when ring comes off'),
+                subtitle: const Text(
+                  'Taking your ring off pauses Spotify, YouTube, or podcasts',
+                ),
+                value: smart.ringOffPauseMedia,
+                onChanged: (v) => unawaited(
+                  ring.updateSmartConfig(smart.copyWith(ringOffPauseMedia: v)),
+                ),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Doze-off thermal media pause'),
+                subtitle: const Text(
+                  'Pauses playback when sustained skin vasodilation (+0.5 °C Δ) '
+                  'signals sleep onset',
+                ),
+                value: smart.dozeOffPauseMedia,
+                onChanged: (v) => unawaited(
+                  ring.updateSmartConfig(smart.copyWith(dozeOffPauseMedia: v)),
+                ),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Broadcast live biometrics'),
+                subtitle: const Text(
+                  'Emits ACTION_RING_EVENT (HR, HRV, PI%, temp, battery, wear) '
+                  'for Tasker, KWGT, or overlays',
+                ),
+                value: smart.broadcastBiometrics,
+                onChanged: (v) => unawaited(
+                  ring.updateSmartConfig(
+                    smart.copyWith(broadcastBiometrics: v),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                "Don't-forget-ring reminder (off finger & not charging)",
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final mins in [0, 5, 15, 30])
+                    ChoiceChip(
+                      label: Text(mins == 0 ? 'Off' : '$mins min'),
+                      selected: smart.ringOffReminderMinutes == mins,
+                      onSelected: (selected) {
+                        if (selected) {
+                          unawaited(
+                            ring.updateSmartConfig(
+                              smart.copyWith(ringOffReminderMinutes: mins),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Pre-bed low-battery alert',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final pct in [0, 15, 20, 30])
+                    ChoiceChip(
+                      label: Text(pct == 0 ? 'Off' : '≤ $pct%'),
+                      selected: smart.lowBatteryGuardPercent == pct,
+                      onSelected: (selected) {
+                        if (selected) {
+                          unawaited(
+                            ring.updateSmartConfig(
+                              smart.copyWith(lowBatteryGuardPercent: pct),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _eventWebhookController,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'Event webhook URL (Home Assistant / IFTTT)',
+                  hintText: 'Optional: receives ring_off, ring_on, low_battery',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onChanged: (url) => unawaited(
+                  ring.updateSmartConfig(smart.copyWith(eventWebhookUrl: url)),
+                ),
+              ),
+              if (ring.lastAutomationDetail case final autoDetail?) ...[
+                const SizedBox(height: 10),
+                Text(
+                  'Last event: $autoDetail',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.primary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
         const _Heading('PPG Biofeedback & Breathing'),
         _Card(
           child: Column(
@@ -134,6 +280,7 @@ class _SensorLabScreenState extends State<SensorLabScreen>
                         : '—',
                   ),
                   _Stat('Beats', '${ppg.beatCount}'),
+                  _Stat('Optical taps', '${ppg.opticalTapCount}'),
                 ],
               ),
               if (ppg.waveform.isNotEmpty) ...[
@@ -147,6 +294,49 @@ class _SensorLabScreenState extends State<SensorLabScreen>
                   color: colors.primary,
                 ),
               ],
+              const SizedBox(height: 14),
+              DropdownButtonFormField<RingDeviceAction>(
+                initialValue: smart.opticalTapAction,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Fast 400 ms optical cover-tap action',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                ),
+                items: [
+                  for (final action in RingDeviceAction.values)
+                    DropdownMenuItem(
+                      value: action,
+                      child: Text(
+                        action.requiresAccessibility
+                            ? '${action.label} (Accessibility)'
+                            : action.label,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (next) {
+                  if (next != null) {
+                    unawaited(
+                      ring.updateSmartConfig(
+                        smart.copyWith(opticalTapAction: next),
+                      ),
+                    );
+                  }
+                },
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Briefly cover or tap over the optical window while streaming '
+                'PPG — 0x12 sends every 400 ms (2.5× faster than 0x13).',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
               const SizedBox(height: 14),
               FilledButton.tonalIcon(
                 onPressed: ring.connected && !ring.syncing
@@ -196,15 +386,14 @@ class _SensorLabScreenState extends State<SensorLabScreen>
                   _Stat('Taps', '${acc.tapCount}'),
                   _Stat('Double taps', '${acc.doubleTapCount}'),
                   _Stat('Wrist flicks', '${acc.flickCount}'),
+                  _Stat('Reps', '${acc.repCount}'),
                 ],
               ),
-              if (acc.latestSample case final s?) ...[
+              if (acc.latestSample != null) ...[
                 const SizedBox(height: 8),
                 Text(
-                  'XYZ (g): '
-                  '${(s.x / 1024).toStringAsFixed(2)}, '
-                  '${(s.y / 1024).toStringAsFixed(2)}, '
-                  '${(s.z / 1024).toStringAsFixed(2)}'
+                  'Pitch ${acc.pitchDeg.toStringAsFixed(0)}°  •  '
+                  'Roll ${acc.rollDeg.toStringAsFixed(0)}°'
                   '${acc.lastGesture != null ? '  •  Last: ${acc.lastGesture!.gesture.label}' : ''}',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: colors.secondary,
@@ -265,18 +454,31 @@ class _SensorLabScreenState extends State<SensorLabScreen>
                 ],
               ),
               const SizedBox(height: 14),
-              FilledButton.tonalIcon(
-                onPressed: ring.connected && !ring.syncing
-                    ? () => ring.setAccelerometer(!ring.accStreaming)
-                    : null,
-                icon: Icon(
-                  ring.accStreaming ? Icons.stop : Icons.touch_app_outlined,
-                ),
-                label: Text(
-                  ring.accStreaming
-                      ? 'Stop 25 Hz gesture stream'
-                      : 'Start 25 Hz gesture stream',
-                ),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: ring.connected && !ring.syncing
+                        ? () => ring.setAccelerometer(!ring.accStreaming)
+                        : null,
+                    icon: Icon(
+                      ring.accStreaming ? Icons.stop : Icons.touch_app_outlined,
+                    ),
+                    label: Text(
+                      ring.accStreaming
+                          ? 'Stop 25 Hz gesture stream'
+                          : 'Start 25 Hz gesture stream',
+                    ),
+                  ),
+                  if (acc.repCount > 0)
+                    TextButton.icon(
+                      onPressed: ring.resetWorkoutReps,
+                      icon: const Icon(Icons.restart_alt, size: 18),
+                      label: const Text('Reset reps'),
+                    ),
+                ],
               ),
             ],
           ),

@@ -17,4 +17,11 @@ final class RingBle {
   Future<void> write(Uint8List bytes) =>
       _methods.invokeMethod<void>('write', {'bytes': bytes});
   Future<void> disconnect() => _methods.invokeMethod<void>('disconnect');
+  Future<void> setHighPriority(bool enabled) async {
+    try {
+      await _methods.invokeMethod<bool>('setHighPriority', {'enabled': enabled});
+    } on MissingPluginException {
+      // Optional optimization implemented on Android.
+    }
+  }
 }

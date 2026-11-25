@@ -2,6 +2,10 @@ package com.ringcompanion.app
 
 import android.Manifest
 import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -36,6 +40,8 @@ internal class DeviceActionBridge(
     private companion object {
         const val NOTIFICATION_PERMISSION_REQUEST = 7106
         const val ACTION_RING_GESTURE = "com.ringcompanion.app.ACTION_RING_GESTURE"
+        const val ACTION_RING_EVENT = "com.ringcompanion.app.ACTION_RING_EVENT"
+        const val ALERTS_CHANNEL_ID = "ring_alerts"
     }
 
     private val channel = MethodChannel(messenger, DEVICE_ACTIONS_CHANNEL)
@@ -104,6 +110,45 @@ internal class DeviceActionBridge(
                 }
                 activity.startActivity(intent)
                 result.success(null)
+            }
+            "notifyAlert" -> {
+                val id = call.argument<Int>("id") ?: 7110
+                val title = call.argument<String>("title") ?: "Ring Companion"
+                val body = call.argument<String>("body") ?: ""
+                showAlertNotification(id, title, body)
+                result.success(true)
+            }
+            "cancelAlert" -> {
+                val id = call.argument<Int>("id") ?: 7110
+                val nm = activity.getSystemService(NotificationManager::class.java)
+                runCatching { nm?.cancel(id) }
+                result.success(true)
+            }
+            "broadcastEvent" -> {
+                val event = call.argument<String>("event") ?: "telemetry"
+                val detail = call.argument<String>("detail") ?: ""
+                val extras = call.argument<Map<String, Any?>>("extras") ?: emptyMap()
+                val webhookUrl = call.argument<String>("webhookUrl")?.trim().orEmpty()
+                val intent = Intent(ACTION_RING_EVENT).apply {
+                    putExtra("event", event)
+                    putExtra("detail", detail)
+                    putExtra("timestamp_ms", System.currentTimeMillis())
+                    for ((k, v) in extras) {
+                        when (v) {
+                            is Int -> putExtra(k, v)
+                            is Double -> putExtra(k, v)
+                            is Boolean -> putExtra(k, v)
+                            is String -> putExtra(k, v)
+                        }
+                    }
+                }
+                activity.sendBroadcast(intent)
+                if (webhookUrl.startsWith("http://") || webhookUrl.startsWith("https://")) {
+                    ioExecutor.execute {
+                        postJsonWebhook(webhookUrl, event, detail, extras)
+                    }
+                }
+                result.success(true)
             }
             else -> result.notImplemented()
         }
@@ -310,6 +355,73 @@ internal class DeviceActionBridge(
             mapOf("ok" to (code in 200..299), "detail" to "Webhook HTTP $code")
         } catch (error: Exception) {
             mapOf("ok" to false, "detail" to "Webhook failed: ${error.message ?: error.javaClass.simpleName}")
+        }
+    }
+
+    private fun showAlertNotification(id: Int, title: String, body: String) {
+        val manager = activity.getSystemService(NotificationManager::class.java) ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            manager.getNotificationChannel(ALERTS_CHANNEL_ID) == null
+        ) {
+            val channel = NotificationChannel(
+                ALERTS_CHANNEL_ID,
+                "Ring Smart Alerts",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Reminders when your ring is left off, low battery before sleep, or stress/HRV cues."
+            }
+            manager.createNotificationChannel(channel)
+        }
+        val openIntent = Intent(activity, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val openPending = PendingIntent.getActivity(
+            activity,
+            id,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(activity, ALERTS_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(activity)
+        }
+        val notification = builder
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setAutoCancel(true)
+            .setContentIntent(openPending)
+            .build()
+        runCatching { manager.notify(id, notification) }
+    }
+
+    private fun postJsonWebhook(
+        urlText: String,
+        event: String,
+        detail: String,
+        extras: Map<String, Any?>,
+    ) {
+        runCatching {
+            val conn = (URL(urlText).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 4000
+                readTimeout = 4000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            val payload = JSONObject()
+                .put("event", event)
+                .put("detail", detail)
+                .put("timestamp_ms", System.currentTimeMillis())
+            for ((k, v) in extras) {
+                if (v != null) payload.put(k, v)
+            }
+            conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+            conn.responseCode
+            conn.disconnect()
         }
     }
 

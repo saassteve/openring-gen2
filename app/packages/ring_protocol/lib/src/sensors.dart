@@ -32,6 +32,9 @@ final class PpgBiofeedbackAnalyzer {
   double? _liveBpm;
   double? _liveRmssdMs;
   int? _lastIbiMs;
+  double? _ambientBaseline;
+  int _opticalTapCount = 0;
+  int _lastOpticalTapSample = -100;
 
   List<double> get waveform => List.unmodifiable(_smoothed);
   double? get perfusionIndexPercent => _perfusionIndexPercent;
@@ -40,6 +43,7 @@ final class PpgBiofeedbackAnalyzer {
   int? get lastIbiMs => _lastIbiMs;
   int get beatCount => _beatCount;
   int get sampleCount => _sampleIndex;
+  int get opticalTapCount => _opticalTapCount;
 
   void reset() {
     _rawCh0.clear();
@@ -53,12 +57,42 @@ final class PpgBiofeedbackAnalyzer {
     _liveBpm = null;
     _liveRmssdMs = null;
     _lastIbiMs = null;
+    _ambientBaseline = null;
+    _opticalTapCount = 0;
+    _lastOpticalTapSample = -100;
   }
 
-  void addFrame(DensePpgFrame frame) {
+  /// Processes a 400 ms `0x12` frame and returns `true` if a fast optical
+  /// cover/tap impulse was detected on the ambient photodiode channel.
+  bool addFrame(DensePpgFrame frame) {
+    var opticalTap = false;
     for (final sample in frame.samples) {
       addSample(sample.channel0.toDouble());
+      if (checkOpticalAmbient(sample.ambient.toDouble())) {
+        opticalTap = true;
+      }
     }
+    return opticalTap;
+  }
+
+  /// Evaluates one 25 Hz ambient optical sample for a fast cover/tap impulse.
+  bool checkOpticalAmbient(double ambient) {
+    final base = _ambientBaseline;
+    if (base == null) {
+      _ambientBaseline = ambient;
+      return false;
+    }
+    final delta = (ambient - base).abs();
+    final threshold = math.max(1200.0, base.abs() * 0.45);
+    if (delta < threshold * 0.5) {
+      _ambientBaseline = base * 0.90 + ambient * 0.10;
+    }
+    if (delta >= threshold && (_sampleIndex - _lastOpticalTapSample) >= 30) {
+      _lastOpticalTapSample = _sampleIndex;
+      _opticalTapCount++;
+      return true;
+    }
+    return false;
   }
 
   void addSample(double ch0) {
@@ -248,8 +282,23 @@ final class GestureDetector3D {
   int _tapCount = 0;
   int _doubleTapCount = 0;
   int _flickCount = 0;
+  int _repCount = 0;
+  double _smoothVerticalG = 0;
+  bool _repArmedHigh = false;
+  int _lastRepSample = -100;
 
   double get tapThresholdG => sensitivity.tapThresholdG;
+  double get rollDeg =>
+      math.atan2(_gravY, _gravZ) * (180.0 / math.pi);
+  double get pitchDeg =>
+      math.atan2(-_gravX, math.sqrt(_gravY * _gravY + _gravZ * _gravZ)) *
+      (180.0 / math.pi);
+  int get repCount => _repCount;
+
+  void resetReps() {
+    _repCount = 0;
+    _repArmedHigh = false;
+  }
   double get flickThresholdG => sensitivity.flickThresholdG;
 
   AccSample? get latestSample => _latestSample;
@@ -287,6 +336,10 @@ final class GestureDetector3D {
     _tapCount = 0;
     _doubleTapCount = 0;
     _flickCount = 0;
+    _repCount = 0;
+    _smoothVerticalG = 0;
+    _repArmedHigh = false;
+    _lastRepSample = -100;
   }
 
   /// Feeds a full `0x13` frame and returns any gestures triggered during it.
@@ -340,6 +393,26 @@ final class GestureDetector3D {
     _prevX = ax;
     _prevY = ay;
     _prevZ = az;
+
+    // Low-pass filtered dynamic acceleration along the gravity axis tracks
+    // smooth periodic workout reps (curls, pushups, squats) at 0.3-2.5 Hz.
+    final gravNorm = math.sqrt(
+      _gravX * _gravX + _gravY * _gravY + _gravZ * _gravZ,
+    );
+    if (gravNorm > 0.2) {
+      final projG =
+          (dxG * _gravX + dyG * _gravY + dzG * _gravZ) / gravNorm;
+      _smoothVerticalG = _smoothVerticalG * 0.72 + projG * 0.28;
+      if (!_repArmedHigh && _smoothVerticalG >= 0.24) {
+        _repArmedHigh = true;
+      } else if (_repArmedHigh &&
+          _smoothVerticalG <= -0.18 &&
+          (_sampleIndex - _lastRepSample) >= 12) {
+        _repArmedHigh = false;
+        _lastRepSample = _sampleIndex;
+        _repCount++;
+      }
+    }
 
     _magnitudeTrace.add(magG);
     if (_magnitudeTrace.length > _traceCapacity) _magnitudeTrace.removeAt(0);

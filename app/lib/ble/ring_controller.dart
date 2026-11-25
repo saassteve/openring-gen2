@@ -51,6 +51,9 @@ final class RingController extends ChangeNotifier {
         gestureConfig = GestureActionConfig.decode(
           await database.getPreference(_gestureConfigKey),
         );
+        smartConfig = SmartAutomationConfig.decode(
+          await database.getPreference(_smartConfigKey),
+        );
         gestureDetector.sensitivity = gestureConfig.sensitivity;
         accessibilityEnabled = await this.deviceActions.isAccessibilityEnabled();
         final last = await database.latestDevice();
@@ -60,6 +63,9 @@ final class RingController extends ChangeNotifier {
   }
 
   static const _gestureConfigKey = 'gesture_action_config';
+  static const _smartConfigKey = 'smart_automations_config';
+  static const _ringOffAlertId = 7111;
+  static const _lowBatteryAlertId = 7112;
 
   final RingDatabase database;
   final RingBle _ble;
@@ -107,10 +113,34 @@ final class RingController extends ChangeNotifier {
   final GestureDetector3D gestureDetector = GestureDetector3D();
   bool accStreaming = false;
   GestureActionConfig gestureConfig = const GestureActionConfig();
+  SmartAutomationConfig smartConfig = const SmartAutomationConfig();
   bool accessibilityEnabled = false;
   String? lastGestureActionDetail;
   DateTime? lastGestureActionAt;
+  String? lastAutomationDetail;
   TemperatureReply? sensorTemperature;
+  Timer? _ringOffReminderTimer;
+  WearState? _lastWearState;
+  bool _lowBatteryNotified = false;
+  int _warmVasodilationStreak = 0;
+  bool _dozePausedThisStreak = false;
+  DateTime? _lastBiometricBroadcastAt;
+
+  Future<void> updateSmartConfig(SmartAutomationConfig next) async {
+    smartConfig = next;
+    await database.setPreference(_smartConfigKey, next.encode());
+    if (next.ringOffReminderMinutes <= 0) {
+      _ringOffReminderTimer?.cancel();
+      _ringOffReminderTimer = null;
+      await deviceActions.cancelAlert(_ringOffAlertId);
+    }
+    _publish();
+  }
+
+  void resetWorkoutReps() {
+    gestureDetector.resetReps();
+    _publish();
+  }
 
   Future<void> updateGestureConfig(GestureActionConfig next) async {
     gestureConfig = next;
@@ -366,11 +396,21 @@ final class RingController extends ChangeNotifier {
       }
       await _initSession();
       ppgAnalyzer.reset();
+      await _ble.setHighPriority(true);
       await _send(RingCommands.mode(RingMode.densePpg));
       mode = RingMode.densePpg;
+      if (gestureConfig.backgroundService &&
+          smartConfig.opticalTapAction != RingDeviceAction.none) {
+        await deviceActions.setBackgroundService(
+          active: true,
+          summary: 'PPG Live · Optical tap: ${smartConfig.opticalTapAction.label}',
+        );
+      }
     } else {
       await _send(RingCommands.mode(RingMode.idle));
       mode = RingMode.idle;
+      await _ble.setHighPriority(false);
+      await deviceActions.setBackgroundService(active: false, summary: '');
       await _send(RingCommands.telemetry());
       _startPolling();
     }
@@ -386,6 +426,7 @@ final class RingController extends ChangeNotifier {
       }
       gestureDetector.reset();
       gestureDetector.sensitivity = gestureConfig.sensitivity;
+      await _ble.setHighPriority(true);
       await _send(RingCommands.startAccelerometer());
       accStreaming = true;
       if (gestureConfig.backgroundService && gestureConfig.actionsEnabled) {
@@ -397,6 +438,7 @@ final class RingController extends ChangeNotifier {
     } else {
       await _send(RingCommands.mode(RingMode.idle));
       accStreaming = false;
+      await _ble.setHighPriority(false);
       await deviceActions.setBackgroundService(active: false, summary: '');
       await _send(RingCommands.telemetry());
       _startPolling();
@@ -413,6 +455,7 @@ final class RingController extends ChangeNotifier {
     await _send(RingCommands.mode(RingMode.idle));
     mode = RingMode.idle;
     accStreaming = false;
+    await _ble.setHighPriority(false);
     await deviceActions.setBackgroundService(active: false, summary: '');
     await _send(RingCommands.telemetry());
     _startPolling();
@@ -614,6 +657,7 @@ final class RingController extends ChangeNotifier {
           await database.saveTelemetry(_deviceId!, time, frame);
           telemetry = frame;
           _latestDescriptorAt = time;
+          unawaited(_processTelemetryAutomations(frame));
         case LiveHeartRateFrame():
           if (!connected) continue;
           await database.saveHeartRate(_deviceId!, time, frame);
@@ -621,15 +665,28 @@ final class RingController extends ChangeNotifier {
           if (measuring && bpm != null) {
             _heartRate.add((time: time, bpm: bpm));
             if (_heartRate.length > 60) _heartRate.removeAt(0);
+            if (smartConfig.broadcastBiometrics) {
+              unawaited(
+                deviceActions.broadcastEvent(
+                  event: 'live_hr',
+                  detail: '$bpm bpm',
+                  extras: {'bpm': bpm},
+                ),
+              );
+            }
           }
         case ModeReply():
           if (connected && !frame.accepted) {
             message = 'The ring rejected the mode command.';
             mode = RingMode.idle;
+            unawaited(_ble.setHighPriority(false));
             _startPolling();
           }
         case StatusNotice():
-          if (connected) await _send(RingCommands.acknowledgeStatus());
+          if (connected) {
+            await _send(RingCommands.acknowledgeStatus());
+            unawaited(_processStatusNotice(frame));
+          }
         case HistoryOpened():
           if (syncing && !frame.accepted) {
             drain!.fail();
@@ -650,7 +707,33 @@ final class RingController extends ChangeNotifier {
         case TemperatureReply():
           sensorTemperature = frame;
         case DensePpgFrame():
-          ppgAnalyzer.addFrame(frame);
+          final opticalTap = ppgAnalyzer.addFrame(frame);
+          if (opticalTap &&
+              smartConfig.opticalTapAction != RingDeviceAction.none) {
+            unawaited(_triggerOpticalTapAction());
+          }
+          if (smartConfig.broadcastBiometrics) {
+            final now = DateTime.now();
+            if (_lastBiometricBroadcastAt == null ||
+                now.difference(_lastBiometricBroadcastAt!).inMilliseconds >=
+                    1000) {
+              _lastBiometricBroadcastAt = now;
+              unawaited(
+                deviceActions.broadcastEvent(
+                  event: 'live_ppg',
+                  detail: 'Live optical biometrics',
+                  extras: {
+                    if (ppgAnalyzer.liveBpm != null)
+                      'bpm': ppgAnalyzer.liveBpm!.round(),
+                    if (ppgAnalyzer.liveRmssdMs != null)
+                      'rmssd_ms': ppgAnalyzer.liveRmssdMs!,
+                    if (ppgAnalyzer.perfusionIndexPercent != null)
+                      'pi_percent': ppgAnalyzer.perfusionIndexPercent!,
+                  },
+                ),
+              );
+            }
+          }
         case RawPpgFrame():
           final events = gestureDetector.addFrame(frame);
           for (final event in events) {
@@ -848,12 +931,203 @@ final class RingController extends ChangeNotifier {
     firmware = version;
   }
 
+  Future<void> _triggerOpticalTapAction() async {
+    final action = smartConfig.opticalTapAction;
+    if (action == RingDeviceAction.none) return;
+    final outcome = await deviceActions.performAction(
+      action: action,
+      gesture: RingGesture.tap,
+      peakG: 1.0,
+      haptic: gestureConfig.hapticFeedback,
+      webhookUrl: gestureConfig.webhookUrl,
+    );
+    lastGestureActionAt = DateTime.now();
+    lastGestureActionDetail = 'Optical cover-tap (400 ms) → ${outcome.detail}';
+    _publish();
+  }
+
+  Future<void> _processStatusNotice(StatusNotice notice) async {
+    switch (notice.event) {
+      case RingStatusEvent.wearOff:
+        await _onWearChanged(WearState.offFinger, source: '0x11');
+      case RingStatusEvent.wearOn:
+        await _onWearChanged(WearState.worn, source: '0x11');
+      case RingStatusEvent.lowBattery:
+        await _triggerLowBatteryAlert(
+          percent: telemetry?.batteryPercent,
+          millivolts: telemetry?.batteryMillivolts,
+        );
+      case RingStatusEvent.hrHigh || RingStatusEvent.hrLow:
+        lastAutomationDetail = notice.event.label;
+        await deviceActions.broadcastEvent(
+          event: notice.event.name,
+          detail: notice.event.label,
+          webhookUrl: smartConfig.eventWebhookUrl,
+        );
+        _publish();
+      default:
+        break;
+    }
+  }
+
+  Future<void> _processTelemetryAutomations(TelemetryFrame frame) async {
+    final prevWear = _lastWearState;
+    if (prevWear != null && prevWear != frame.wear) {
+      await _onWearChanged(frame.wear, source: '0x10');
+    } else if (prevWear == null) {
+      _lastWearState = frame.wear;
+    }
+
+    // Low-battery pre-bed guard (resets once charged 5% above threshold).
+    final threshold = smartConfig.lowBatteryGuardPercent;
+    if (threshold > 0) {
+      if (frame.batteryPercent >= threshold + 5) {
+        _lowBatteryNotified = false;
+      } else if (!_lowBatteryNotified && frame.batteryPercent <= threshold) {
+        await _triggerLowBatteryAlert(
+          percent: frame.batteryPercent,
+          millivolts: frame.batteryMillivolts,
+        );
+      }
+    }
+
+    // Doze-off thermal vasodilation check (on-finger inner - outer >= +0.5 °C).
+    if (smartConfig.dozeOffPauseMedia && frame.wear == WearState.worn) {
+      final delta = frame.temperature2 - frame.temperature1;
+      if (delta >= 0.5) {
+        _warmVasodilationStreak++;
+        if (_warmVasodilationStreak >= 2 && !_dozePausedThisStreak) {
+          _dozePausedThisStreak = true;
+          await deviceActions.performAction(
+            action: RingDeviceAction.mediaPlayPause,
+            gesture: RingGesture.tap,
+            peakG: 0,
+            haptic: false,
+          );
+          lastAutomationDetail =
+              'Doze-off vasodilation (+${delta.toStringAsFixed(1)} °C) → paused media';
+          await deviceActions.broadcastEvent(
+            event: 'doze_off',
+            detail: lastAutomationDetail!,
+            extras: {
+              'ntc1': frame.temperature1,
+              'ntc2': frame.temperature2,
+              'thermal_delta': delta,
+            },
+            webhookUrl: smartConfig.eventWebhookUrl,
+          );
+          _publish();
+        }
+      } else {
+        _warmVasodilationStreak = 0;
+        _dozePausedThisStreak = false;
+      }
+    }
+
+    if (smartConfig.broadcastBiometrics) {
+      await deviceActions.broadcastEvent(
+        event: 'telemetry',
+        detail: '${frame.batteryPercent}% · ${frame.wear.name}',
+        extras: {
+          'battery_pct': frame.batteryPercent,
+          'battery_mv': frame.batteryMillivolts,
+          'ntc1': frame.temperature1,
+          'ntc2': frame.temperature2,
+          'wear': frame.wear.name,
+        },
+      );
+    }
+  }
+
+  Future<void> _onWearChanged(WearState next, {required String source}) async {
+    final prev = _lastWearState;
+    _lastWearState = next;
+    if (next == WearState.offFinger && prev != WearState.offFinger) {
+      if (smartConfig.ringOffPauseMedia) {
+        await deviceActions.performAction(
+          action: RingDeviceAction.mediaPlayPause,
+          gesture: RingGesture.tap,
+          peakG: 0,
+          haptic: false,
+        );
+      }
+      final mins = smartConfig.ringOffReminderMinutes;
+      _ringOffReminderTimer?.cancel();
+      if (mins > 0) {
+        _ringOffReminderTimer = Timer(Duration(minutes: mins), () {
+          if (_disposed || _lastWearState != WearState.offFinger) return;
+          unawaited(
+            deviceActions.notifyAlert(
+              id: _ringOffAlertId,
+              title: "Don't forget your ring",
+              body:
+                  'Your ring has been off your finger for $mins min and is not charging.',
+            ),
+          );
+        });
+      }
+      lastAutomationDetail = smartConfig.ringOffPauseMedia
+          ? 'Ring taken off ($source) → paused media'
+          : 'Ring taken off ($source)';
+      await deviceActions.broadcastEvent(
+        event: 'ring_off',
+        detail: lastAutomationDetail!,
+        extras: {'wear': next.name},
+        webhookUrl: smartConfig.eventWebhookUrl,
+      );
+      _publish();
+    } else if (next == WearState.worn || next == WearState.measuring) {
+      _ringOffReminderTimer?.cancel();
+      _ringOffReminderTimer = null;
+      await deviceActions.cancelAlert(_ringOffAlertId);
+      if (next == WearState.worn && prev == WearState.offFinger) {
+        lastAutomationDetail = 'Ring put back on ($source)';
+        await deviceActions.broadcastEvent(
+          event: 'ring_on',
+          detail: lastAutomationDetail!,
+          extras: {'wear': next.name},
+          webhookUrl: smartConfig.eventWebhookUrl,
+        );
+        _publish();
+      }
+    }
+  }
+
+  Future<void> _triggerLowBatteryAlert({int? percent, int? millivolts}) async {
+    if (_lowBatteryNotified) return;
+    _lowBatteryNotified = true;
+    final pct = percent != null ? '$percent%' : 'low';
+    final mv = millivolts != null ? ' ($millivolts mV)' : '';
+    final detail = 'Ring battery at $pct$mv — top up before sleep';
+    lastAutomationDetail = detail;
+    await deviceActions.notifyAlert(
+      id: _lowBatteryAlertId,
+      title: 'Ring battery low ($pct)',
+      body: detail,
+    );
+    await deviceActions.broadcastEvent(
+      event: 'low_battery',
+      detail: detail,
+      extras: {
+        'battery_pct': ?percent,
+        'battery_mv': ?millivolts,
+      },
+      webhookUrl: smartConfig.eventWebhookUrl,
+    );
+    _publish();
+  }
+
   void _resetLink() {
     stopCommandScan();
     _authTimer?.cancel();
     _pollTimer?.cancel();
     _bulkTimer?.cancel();
     _historyTimer?.cancel();
+    _ringOffReminderTimer?.cancel();
+    _ringOffReminderTimer = null;
+    _lastWearState = null;
+    _warmVasodilationStreak = 0;
+    _dozePausedThisStreak = false;
     _parser.reset();
     _commandParser?.reset();
     _traceClock.stop();

@@ -47,6 +47,7 @@ void main() {
 
     await tester.tap(find.text('Sensors'));
     await tester.pumpAndSettle();
+    expect(find.text('Always-On Ring Automations'), findsOneWidget);
     expect(find.text('PPG Biofeedback & Breathing'), findsOneWidget);
     expect(find.text('25 Hz Motion & Finger Gestures'), findsOneWidget);
     expect(find.text('System-Wide Device Control'), findsOneWidget);

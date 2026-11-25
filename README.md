@@ -59,7 +59,8 @@ Everything lives in one clean repository — pick the layer you need:
 ### 1. **Ring Companion** — Flutter Mobile App (`app/`)
 An independent, local-first companion app for **Android** and **iOS** with native BLE bridges and a pure-Dart protocol engine:
 - **Live dashboard** — heart rate, battery %, voltage (mV), wear state, dual-NTC temperatures, and `81 01` status flags (`ecoMode`, `sportsMonitor`, `monitorStatus`).
-- **Sensor Lab (`Sensors` tab)** — unlocks the hardware sensors consumer apps ignore:
+- **Sensor Lab & Always-On Automations (`Sensors` tab)** — unlocks every hardware sensor inside the ring:
+  - **Always-On Ring Automations (zero extra battery)** (`0x11` hardware events + `0x10` telemetry): auto-pause media when you take the ring off, cancellable *"Don't forget your ring"* reminder, pre-bed low-battery guard with exact mV, thermal vasodilation doze-off media pause, live `ACTION_RING_EVENT` biometric broadcasts (Tasker / KWGT), and Home Assistant webhooks.
   - **Live PPG Biofeedback & Coherent Breathing** (`06 05 00` → `0x12`): real-time Green PPG waveform, beat-to-beat BPM, rolling RMSSD HRV, finger Perfusion Index (`PI%`), and a 5.5 s inhale / 5.5 s exhale breathing pacer.
   - **25 Hz Motion, Finger Gestures & System-Wide Android Control** (`23 03 00` → `0x13`): orientation-independent 3D linear-acceleration + jerk detector with live threshold sparkline, configurable sensitivity, haptic feedback, and background Android Foreground Service control across apps and screen-off (media Play/Pause/Next/Previous, volume/camera shutter, flashlight, Tasker broadcasts, Home Assistant HTTP webhooks, plus optional privacy-first Accessibility scroll/page-turn/screenshot/back).
   - **Live Dual-NTC Thermal Gradient** (`29 00 00` → `0xa9`): inner-vs-outer temperature delta as a vasodilation indicator.
@@ -168,7 +169,7 @@ flutter build apk --debug
 Everything marked `verified-on-device` has been reproduced live on a physical Gen 2 ring running firmware **`FR02.023`**:
 
 - **Verified live:** CoreBluetooth & Android bonding, SM3 auth (`81 00` → `01 01` → 38 B `81 01`), `0x05` parameter toggles (`05 23` Auto-Sports verified via `81 01` flag flip, `05 25` Auto BP), live HR (`06 01` + `95 00 00`), 4-ch PPG (`06 02` / `06 05` → `0x12`), live 25 Hz 3-axis ACC (`23 03 00` → `0x13`), dual-NTC temperature (`29 00 00` → `0xa9`), 20 B telemetry (`0x10`/`0x87`), and full two-stream history drain (`0x4c` + `0x47`).
-- **Automated test suite:** 30/30 unit, protocol replay, 3D gesture DSP, SQLite migration, Health Connect exporter, device-action, command console, and widget tests passing against redacted hardware captures.
+- **Automated test suite:** 32/32 unit, protocol replay, 3D gesture DSP, SQLite migration, Health Connect exporter, device-action, command console, and widget tests passing against redacted hardware captures.
 
 > [!WARNING]
 > **Read before probing your primary ring:**

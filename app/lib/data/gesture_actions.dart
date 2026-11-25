@@ -214,6 +214,91 @@ final class GestureActionConfig {
   }
 }
 
+
+final class SmartAutomationConfig {
+  const SmartAutomationConfig({
+    this.ringOffPauseMedia = true,
+    this.ringOffReminderMinutes = 15,
+    this.lowBatteryGuardPercent = 20,
+    this.dozeOffPauseMedia = false,
+    this.broadcastBiometrics = true,
+    this.opticalTapAction = RingDeviceAction.mediaPlayPause,
+    this.eventWebhookUrl = '',
+  });
+
+  /// Pause active media automatically when the ring is taken off finger.
+  final bool ringOffPauseMedia;
+
+  /// Minutes after ring-off (not charging) before notifying "Don't forget your ring" (0 = off).
+  final int ringOffReminderMinutes;
+
+  /// Notify once per discharge cycle when ring battery drops to/below this % (0 = off).
+  final int lowBatteryGuardPercent;
+
+  /// Pause media automatically when on-finger dual-NTC thermal delta signals sleep onset.
+  final bool dozeOffPauseMedia;
+
+  /// Broadcast live biometrics & wear/battery events via Android Intent for Tasker / KWGT.
+  final bool broadcastBiometrics;
+
+  /// Action triggered by a fast (~400 ms) optical cover-tap during live 0x12 PPG mode.
+  final RingDeviceAction opticalTapAction;
+
+  /// Optional webhook URL receiving ring_off, ring_on, low_battery, doze_off JSON payloads.
+  final String eventWebhookUrl;
+
+  SmartAutomationConfig copyWith({
+    bool? ringOffPauseMedia,
+    int? ringOffReminderMinutes,
+    int? lowBatteryGuardPercent,
+    bool? dozeOffPauseMedia,
+    bool? broadcastBiometrics,
+    RingDeviceAction? opticalTapAction,
+    String? eventWebhookUrl,
+  }) => SmartAutomationConfig(
+    ringOffPauseMedia: ringOffPauseMedia ?? this.ringOffPauseMedia,
+    ringOffReminderMinutes:
+        ringOffReminderMinutes ?? this.ringOffReminderMinutes,
+    lowBatteryGuardPercent:
+        lowBatteryGuardPercent ?? this.lowBatteryGuardPercent,
+    dozeOffPauseMedia: dozeOffPauseMedia ?? this.dozeOffPauseMedia,
+    broadcastBiometrics: broadcastBiometrics ?? this.broadcastBiometrics,
+    opticalTapAction: opticalTapAction ?? this.opticalTapAction,
+    eventWebhookUrl: eventWebhookUrl ?? this.eventWebhookUrl,
+  );
+
+  String encode() => jsonEncode({
+    'ringOffPauseMedia': ringOffPauseMedia,
+    'ringOffReminderMinutes': ringOffReminderMinutes,
+    'lowBatteryGuardPercent': lowBatteryGuardPercent,
+    'dozeOffPauseMedia': dozeOffPauseMedia,
+    'broadcastBiometrics': broadcastBiometrics,
+    'opticalTapAction': opticalTapAction.name,
+    'eventWebhookUrl': eventWebhookUrl,
+  });
+
+  static SmartAutomationConfig decode(String? raw) {
+    if (raw == null || raw.isEmpty) return const SmartAutomationConfig();
+    try {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      return SmartAutomationConfig(
+        ringOffPauseMedia: map['ringOffPauseMedia'] as bool? ?? true,
+        ringOffReminderMinutes: map['ringOffReminderMinutes'] as int? ?? 15,
+        lowBatteryGuardPercent: map['lowBatteryGuardPercent'] as int? ?? 20,
+        dozeOffPauseMedia: map['dozeOffPauseMedia'] as bool? ?? false,
+        broadcastBiometrics: map['broadcastBiometrics'] as bool? ?? true,
+        opticalTapAction: RingDeviceAction.parse(
+          map['opticalTapAction'] as String?,
+          RingDeviceAction.mediaPlayPause,
+        ),
+        eventWebhookUrl: map['eventWebhookUrl'] as String? ?? '',
+      );
+    } catch (_) {
+      return const SmartAutomationConfig();
+    }
+  }
+}
+
 typedef DeviceActionOutcome = ({bool ok, String detail});
 
 class DeviceActionChannel {
@@ -313,6 +398,57 @@ class DeviceActionChannel {
       await _channel.invokeMethod<void>('openAccessibilitySettings');
     } on MissingPluginException {
       // Ignore in tests.
+    }
+  }
+
+  Future<void> notifyAlert({
+    required int id,
+    required String title,
+    required String body,
+  }) async {
+    if (!supported) return;
+    try {
+      await _channel.invokeMethod<bool>('notifyAlert', {
+        'id': id,
+        'title': title,
+        'body': body,
+      });
+    } on MissingPluginException {
+      // Ignore in tests.
+    } on PlatformException {
+      // Non-fatal.
+    }
+  }
+
+  Future<void> cancelAlert(int id) async {
+    if (!supported) return;
+    try {
+      await _channel.invokeMethod<bool>('cancelAlert', {'id': id});
+    } on MissingPluginException {
+      // Ignore in tests.
+    } on PlatformException {
+      // Non-fatal.
+    }
+  }
+
+  Future<void> broadcastEvent({
+    required String event,
+    required String detail,
+    Map<String, Object?> extras = const {},
+    String webhookUrl = '',
+  }) async {
+    if (!supported) return;
+    try {
+      await _channel.invokeMethod<bool>('broadcastEvent', {
+        'event': event,
+        'detail': detail,
+        'extras': extras,
+        'webhookUrl': webhookUrl,
+      });
+    } on MissingPluginException {
+      // Ignore in tests.
+    } on PlatformException {
+      // Non-fatal.
     }
   }
 }

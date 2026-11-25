@@ -122,6 +122,16 @@ internal class RingBleBridge(
                     closeConnection("Disconnected")
                     result.success(null)
                 }
+                "setHighPriority" -> {
+                    val enabled = call.argument<Boolean>("enabled") ?: false
+                    val priority = if (enabled) {
+                        BluetoothGatt.CONNECTION_PRIORITY_HIGH
+                    } else {
+                        BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+                    }
+                    val ok = gatt?.requestConnectionPriority(priority) ?: false
+                    result.success(ok)
+                }
                 "subscribe" -> {
                     if (!ready || gatt == null || subscribeResult != null || subscribed) {
                         result.error("subscribe", "GATT is unavailable or already subscribed", null)

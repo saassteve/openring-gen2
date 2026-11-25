@@ -119,7 +119,36 @@ void main() {
     expect(insights.hrvMedianMs, isNotNull);
     expect(insights.meanThermalDeltaC, isNotNull);
   });
+  test('StatusNotice decodes hardware wear/battery events, optical cover-tap, and rep counter', () {
+    // 0x11 wear-off (04) and low-battery (09)
+    final offBytes = [0x11, 0x00, 0x00, 0x04, 0x11 ^ 0x04];
+    final off = RingFrame.decode(offBytes) as StatusNotice;
+    expect(off.event, RingStatusEvent.wearOff);
+
+    final lowBytes = [0x11, 0x00, 0x00, 0x09, 0x11 ^ 0x09];
+    final low = RingFrame.decode(lowBytes) as StatusNotice;
+    expect(low.event, RingStatusEvent.lowBattery);
+
+    // Fast 400 ms optical cover-tap on ambient photodiode
+    final ppg = PpgBiofeedbackAnalyzer();
+    for (var i = 0; i < 10; i++) {
+      ppg.addSample(400000);
+      expect(ppg.checkOpticalAmbient(500), isFalse);
+    }
+    ppg.addSample(400000);
+    expect(ppg.checkOpticalAmbient(3200), isTrue);
+    expect(ppg.opticalTapCount, 1);
+
+    // Periodic 1 Hz workout reps (3 smooth cycles)
+    final motion = GestureDetector3D();
+    for (var i = 0; i < 90; i++) {
+      final cycle = (500 * math.sin(2 * math.pi * (i / 25.0))).round();
+      motion.addSample((x: 0, y: 0, z: 1024 + cycle));
+    }
+    expect(motion.repCount, greaterThanOrEqualTo(2));
+  });
 }
+
 
 List<int> _hex(String input) => [
   for (var i = 0; i < input.length; i += 2)

@@ -130,8 +130,35 @@ final class ModeReply extends RingFrame {
   bool get accepted => raw[1] == 0;
 }
 
+enum RingStatusEvent {
+  wearOn(0x03, 'Ring put on finger'),
+  wearOff(0x04, 'Ring taken off finger'),
+  hrHigh(0x05, 'High heart rate alert'),
+  hrLow(0x06, 'Low heart rate alert'),
+  lowBattery(0x09, 'Low battery'),
+  memoryFull(0x0a, 'Ring memory full'),
+  weakSignal(0x0b, 'Weak optical signal'),
+  unknown(-1, 'Ring status notice');
+
+  const RingStatusEvent(this.code, this.label);
+  final int code;
+  final String label;
+
+  static RingStatusEvent fromCode(int code) {
+    for (final value in values) {
+      if (value.code == code) return value;
+    }
+    return unknown;
+  }
+}
+
 final class StatusNotice extends RingFrame {
   StatusNotice._(super.raw) : super._();
+
+  int get errorCode => raw[1];
+  int get statusCode => raw[2];
+  int get eventCode => raw[3];
+  RingStatusEvent get event => RingStatusEvent.fromCode(eventCode);
 }
 
 sealed class PpgFrame extends RingFrame {

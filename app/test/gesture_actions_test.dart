@@ -58,4 +58,31 @@ void main() {
     expect(await actions.isAccessibilityEnabled(), isTrue);
     expect(calls.map((c) => c.method), ['performAction', 'accessibilityStatus']);
   });
+
+  test('SmartAutomationConfig round-trips JSON encoding cleanly', () {
+    const defaults = SmartAutomationConfig();
+    expect(defaults.ringOffPauseMedia, isTrue);
+    expect(defaults.ringOffReminderMinutes, 15);
+    expect(defaults.lowBatteryGuardPercent, 20);
+    expect(defaults.broadcastBiometrics, isTrue);
+
+    final custom = defaults.copyWith(
+      ringOffPauseMedia: false,
+      ringOffReminderMinutes: 30,
+      lowBatteryGuardPercent: 15,
+      dozeOffPauseMedia: true,
+      opticalTapAction: RingDeviceAction.toggleFlashlight,
+      eventWebhookUrl: 'http://homeassistant.local:8123/api/webhook/events',
+    );
+    final decoded = SmartAutomationConfig.decode(custom.encode());
+    expect(decoded.ringOffPauseMedia, isFalse);
+    expect(decoded.ringOffReminderMinutes, 30);
+    expect(decoded.lowBatteryGuardPercent, 15);
+    expect(decoded.dozeOffPauseMedia, isTrue);
+    expect(decoded.opticalTapAction, RingDeviceAction.toggleFlashlight);
+    expect(
+      decoded.eventWebhookUrl,
+      'http://homeassistant.local:8123/api/webhook/events',
+    );
+  });
 }
