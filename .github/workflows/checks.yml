@@ -30,6 +30,9 @@ jobs:
         with:
           channel: stable
           cache: true
+      - name: Resolve nested ring_protocol package
+        working-directory: app/packages/ring_protocol
+        run: dart pub get
       - name: Pub get, analyze, and test
         working-directory: app
         run: |
