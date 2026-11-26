@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../ble/ring_controller.dart';
 import '../data/health_exporter.dart';
 import '../data/health_metric.dart';
+import 'command_console_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen(this.exporter, {this.ring, super.key});
@@ -22,12 +24,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late Future<HealthExportReport?> _report = _exporter.latestReport();
   bool _autoExport = true;
   bool _exporting = false;
+  bool _showDevTools = false;
+  bool _exportingTrace = false;
   String? _message;
+  late final TextEditingController _eventWebhookController;
 
   @override
   void initState() {
     super.initState();
+    _eventWebhookController = TextEditingController(
+      text: widget.ring?.smartConfig.eventWebhookUrl ?? '',
+    );
     _loadAutoExport();
+  }
+
+  @override
+  void dispose() {
+    _eventWebhookController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadAutoExport() async {
@@ -36,10 +50,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _autoExport = enabled);
   }
 
+  String _connectionSummary(RingController ring) => switch (ring.state) {
+    LinkState.ready => 'Connected (${ring.displayRingName})',
+    LinkState.disconnected =>
+      ring.reconnecting ? 'Reconnecting automatically…' : 'Not connected',
+    LinkState.scanning => 'Searching for nearby rings…',
+    LinkState.connecting => 'Connecting…',
+    LinkState.subscribing => 'Pairing with ring…',
+    LinkState.authenticating => 'Securing connection…',
+  };
+
   @override
   Widget build(BuildContext context) {
     final ring = widget.ring;
     final theme = Theme.of(context);
+    final colors = theme.colorScheme;
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: SafeArea(
@@ -52,13 +77,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 builder: (context, _) => Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-                      child: Text(
-                        'Automation',
-                        style: theme.textTheme.titleMedium,
-                      ),
-                    ),
+                    _SectionLabel('Automation'),
                     Card(
                       child: Column(
                         children: [
@@ -74,9 +93,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           const Divider(height: 1),
                           SwitchListTile(
                             secondary: const Icon(Icons.sync),
-                            title: const Text('Auto-sync health data'),
+                            title: const Text('Auto-sync HRV & health data'),
                             subtitle: const Text(
-                              'Automatically downloads new sleep, HRV, and temperature data when connected.',
+                              'Automatically downloads sleep, HRV, heart rate, and skin temperature when connected.',
                             ),
                             value: ring.autoSyncHistory,
                             onChanged: (v) =>
@@ -85,9 +104,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           const Divider(height: 1),
                           SwitchListTile(
                             secondary: const Icon(Icons.touch_app_outlined),
-                            title: const Text('Auto-enable ring gestures'),
+                            title: const Text(
+                              'Auto-enable Ring Remote on connect',
+                            ),
                             subtitle: const Text(
-                              'Arms finger taps & wrist flicks automatically as soon as your ring connects.',
+                              'Turns on finger taps and wrist twists automatically as soon as your ring connects.',
                             ),
                             value: ring.gestureConfig.autoStartGestures,
                             onChanged: (v) => unawaited(
@@ -105,13 +126,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ],
                 ),
               ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-              child: Text(
-                'Health Connect (Android)',
-                style: theme.textTheme.titleMedium,
-              ),
-            ),
+            _SectionLabel('Health Connect (Android)'),
             if (!HealthExporter.supportedPlatform)
               const Card(
                 child: ListTile(
@@ -119,7 +134,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   title: Text('Android only'),
                   subtitle: Text(
                     'Automatic Health Connect export is available on Android. '
-                    'On iOS, ring history is stored locally on your device.',
+                    'On iOS, ring history is stored privately on your device.',
                   ),
                 ),
               )
@@ -129,7 +144,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   children: [
                     SwitchListTile(
                       secondary: const Icon(Icons.autorenew),
-                      title: const Text('Auto-export after history sync'),
+                      title: const Text('Auto-export after sync'),
                       subtitle: const Text(
                         'Automatically saves heart rate, HRV, SpO₂, breathing, '
                         'steps, and skin temperature to Android Health Connect.',
@@ -175,10 +190,193 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 12),
               Text(message),
             ],
+            if (ring != null) ...[
+              const SizedBox(height: 20),
+              ListenableBuilder(
+                listenable: ring,
+                builder: (context, _) {
+                  final smart = ring.smartConfig;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _SectionLabel('Ring Info & Troubleshooting'),
+                      Card(
+                        child: Column(
+                          children: [
+                            ListTile(
+                              leading: const Icon(Icons.info_outline),
+                              title: const Text('Connection status'),
+                              subtitle: Text(_connectionSummary(ring)),
+                            ),
+                            if (ring.firmware case final firmware?) ...[
+                              const Divider(height: 1),
+                              ListTile(
+                                leading: const Icon(Icons.memory_outlined),
+                                title: const Text('Ring firmware'),
+                                subtitle: Text(firmware),
+                              ),
+                            ],
+                            const Divider(height: 1),
+                            ListTile(
+                              leading: const Icon(Icons.restart_alt_rounded),
+                              title: const Text('Reset stuck sensors'),
+                              subtitle: const Text(
+                                'Stops any active heart-rate or gesture stream if the ring stops responding.',
+                              ),
+                              enabled: ring.connected && !ring.syncing,
+                              onTap: ring.connected && !ring.syncing
+                                  ? () {
+                                      unawaited(ring.forceStopModes());
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Reset signal sent to ring.',
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  : null,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      TextButton.icon(
+                        onPressed: () =>
+                            setState(() => _showDevTools = !_showDevTools),
+                        icon: Icon(
+                          _showDevTools
+                              ? Icons.expand_less
+                              : Icons.expand_more,
+                        ),
+                        label: const Text('Developer & Smart Home Tools'),
+                      ),
+                      if (_showDevTools) ...[
+                        const SizedBox(height: 6),
+                        Card(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SwitchListTile(
+                                secondary: const Icon(Icons.hub_outlined),
+                                title: const Text(
+                                  'Broadcast live events (Tasker / KWGT)',
+                                ),
+                                subtitle: const Text(
+                                  'Sends local Android broadcasts when heart rate, wear state, or battery changes.',
+                                ),
+                                value: smart.broadcastBiometrics,
+                                onChanged: (v) => unawaited(
+                                  ring.updateSmartConfig(
+                                    smart.copyWith(broadcastBiometrics: v),
+                                  ),
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  4,
+                                  16,
+                                  16,
+                                ),
+                                child: TextField(
+                                  controller: _eventWebhookController,
+                                  keyboardType: TextInputType.url,
+                                  decoration: const InputDecoration(
+                                    labelText:
+                                        'Home Assistant / IFTTT webhook URL',
+                                    hintText:
+                                        'Optional: receives ring_off, ring_on, low_battery',
+                                    border: OutlineInputBorder(),
+                                    isDense: true,
+                                  ),
+                                  onChanged: (url) => unawaited(
+                                    ring.updateSmartConfig(
+                                      smart.copyWith(eventWebhookUrl: url),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const Divider(height: 1),
+                              Builder(
+                                builder: (buttonContext) => ListTile(
+                                  leading: const Icon(Icons.ios_share),
+                                  title: Text(
+                                    _exportingTrace
+                                        ? 'Preparing debug log…'
+                                        : 'Export debug log',
+                                  ),
+                                  subtitle: Text(
+                                    'Share the latest Bluetooth trace for troubleshooting (may include health readings).',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: colors.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  enabled: !_exportingTrace,
+                                  onTap: _exportingTrace
+                                      ? null
+                                      : () => _exportTrace(buttonContext, ring),
+                                ),
+                              ),
+                              const Divider(height: 1),
+                              ListTile(
+                                leading: const Icon(Icons.terminal),
+                                title: const Text('BLE Command Console'),
+                                subtitle: const Text(
+                                  'Send raw protocol commands or scan ring opcodes.',
+                                ),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => Navigator.of(context).push<void>(
+                                  MaterialPageRoute(
+                                    builder: (_) => CommandConsoleScreen(ring),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+            ],
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _exportTrace(BuildContext context, RingController ring) async {
+    final box = context.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? Rect.zero
+        : box.localToGlobal(Offset.zero) & box.size;
+    setState(() => _exportingTrace = true);
+    try {
+      final trace = await ring.exportTrace();
+      if (!context.mounted) return;
+      if (trace == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No debug log captured yet.')),
+        );
+      } else {
+        await SharePlus.instance.share(
+          ShareParams(
+            files: [XFile(trace.path, mimeType: 'application/x-ndjson')],
+            sharePositionOrigin: origin,
+          ),
+        );
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not export debug log. $error')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _exportingTrace = false);
+    }
   }
 
   Future<void> _toggleAutoExport(bool enabled) async {
@@ -243,4 +441,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _message = message;
     });
   }
+}
+
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+    child: Text(text, style: Theme.of(context).textTheme.titleMedium),
+  );
 }

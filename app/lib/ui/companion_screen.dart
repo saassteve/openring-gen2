@@ -3,13 +3,11 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 import 'package:ring_protocol/ring_protocol.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../ble/ring_controller.dart';
 import '../data/gesture_actions.dart';
 import '../data/health_exporter.dart';
 import '../data/ring_database.dart';
-import 'command_console_screen.dart';
 import 'sensor_lab_screen.dart';
 import 'settings_screen.dart';
 import 'sparkline.dart';
@@ -67,16 +65,8 @@ class _CompanionScreenState extends State<CompanionScreen>
               }
             },
           ),
-          Builder(
-            builder: (context) => IconButton(
-              tooltip: 'Diagnostics',
-              icon: const Icon(Icons.tune),
-              onPressed: Scaffold.of(context).openEndDrawer,
-            ),
-          ),
         ],
       ),
-      endDrawer: const _DiagnosticsDrawer(),
       body: SafeArea(
         bottom: false,
         child: Align(
@@ -329,7 +319,7 @@ class _ConnectionHeader extends StatelessWidget {
   }
 }
 
-class _HomeScreen extends StatelessWidget {
+class _HomeScreen extends StatefulWidget {
   const _HomeScreen(
     this.ring, {
     required this.onOpenControl,
@@ -341,20 +331,37 @@ class _HomeScreen extends StatelessWidget {
   final VoidCallback onOpenRing;
 
   @override
+  State<_HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<_HomeScreen> {
+  late Future<CircadianInsights> _insights;
+  int _lastSyncCount = -1;
+
+  @override
+  void initState() {
+    super.initState();
+    _lastSyncCount = widget.ring.syncCompletedCount;
+    _insights = widget.ring.database.loadCircadianInsights();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.ring.syncCompletedCount != _lastSyncCount) {
+      _lastSyncCount = widget.ring.syncCompletedCount;
+      _insights = widget.ring.database.loadCircadianInsights();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final ring = widget.ring;
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final cfg = ring.gestureConfig;
     final samples = ring.heartRate;
     final latest = samples.lastOrNull?.bpm;
-
-    GesturePreset? activePreset;
-    for (final preset in GestureActionConfig.presets) {
-      if (preset.matches(cfg)) {
-        activePreset = preset;
-        break;
-      }
-    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -387,12 +394,9 @@ class _HomeScreen extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        Text('Ring Remote', style: theme.textTheme.titleMedium),
                         Text(
-                          'Ring Gestures',
-                          style: theme.textTheme.titleMedium,
-                        ),
-                        Text(
-                          activePreset?.title ?? 'Custom actions',
+                          'Control music, flashlight, camera, or find your phone from your finger',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: colors.onSurfaceVariant,
                           ),
@@ -437,7 +441,7 @@ class _HomeScreen extends StatelessWidget {
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton(
-                  onPressed: onOpenControl,
+                  onPressed: widget.onOpenControl,
                   child: const Text('Customize & automations →'),
                 ),
               ),
@@ -453,12 +457,109 @@ class _HomeScreen extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      'Live heart rate',
+                      "Today's Recovery & Sync",
                       style: theme.textTheme.titleMedium,
                     ),
                   ),
+                  TextButton(
+                    onPressed: widget.onOpenRing,
+                    child: const Text('Details'),
+                  ),
+                ],
+              ),
+              Text(
+                'HRV, sleep darkness, and health metrics auto-sync whenever your ring connects.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 12),
+              FutureBuilder<CircadianInsights>(
+                future: _insights,
+                builder: (context, snapshot) {
+                  final data = snapshot.data;
+                  if (data == null ||
+                      (data.epochCount == 0 && data.thermalBlockCount == 0)) {
+                    return Text(
+                      'Sync your ring to see HRV recovery and overnight sleep darkness here.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    );
+                  }
+                  return Wrap(
+                    spacing: 22,
+                    runSpacing: 10,
+                    children: [
+                      _Metric(
+                        'Typical HRV',
+                        data.hrvMedianMs != null
+                            ? '${data.hrvMedianMs} ms'
+                            : '—',
+                      ),
+                      _Metric(
+                        'Pitch-dark rest',
+                        formatDurationHm(data.darkMinutes),
+                      ),
+                      _Metric(
+                        'Night light spikes',
+                        data.darkLightSpikes == 0
+                            ? 'None'
+                            : '${data.darkLightSpikes}',
+                      ),
+                    ],
+                  );
+                },
+              ),
+              if (HealthExporter.supportedPlatform) ...[
+                const SizedBox(height: 12),
+                _HealthAutoExportFooter(ring),
+              ] else ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Your health history stays private on this device.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: ring.connected && !ring.syncing
+                    ? ring.syncHistory
+                    : null,
+                icon: Icon(ring.syncing ? Icons.sync : Icons.download_rounded),
+                label: Text(ring.syncing ? 'Syncing ring…' : 'Sync now'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Quick Heart Rate Check',
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        Text(
+                          'Take a live spot-check reading anytime',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                   if (ring.measuring)
-                    _StatusPill(
+                    const _StatusPill(
                       icon: Icons.favorite_rounded,
                       label: 'Live',
                       highlight: true,
@@ -492,8 +593,8 @@ class _HomeScreen extends StatelessWidget {
                     ring.measuring
                         ? 'Warming up… keep your hand relaxed.'
                         : ring.connected
-                        ? 'Tap below for an instant heart rate reading.'
-                        : 'Connect your ring to measure live heart rate.',
+                        ? 'Tap below for an instant spot-check reading.'
+                        : 'Connect your ring to take a live reading.',
                     style: TextStyle(color: colors.onSurfaceVariant),
                   ),
                 )
@@ -520,48 +621,8 @@ class _HomeScreen extends StatelessWidget {
                   ring.measuring ? Icons.stop_rounded : Icons.favorite_outline,
                 ),
                 label: Text(
-                  ring.measuring ? 'Stop reading' : 'Measure heart rate',
+                  ring.measuring ? 'Stop reading' : 'Start spot check',
                 ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        _Panel(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Health Sync',
-                      style: theme.textTheme.titleMedium,
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: onOpenRing,
-                    child: const Text('Details'),
-                  ),
-                ],
-              ),
-              if (HealthExporter.supportedPlatform) ...[
-                const SizedBox(height: 4),
-                _HealthAutoExportFooter(ring),
-              ] else
-                Text(
-                  'Your ring readings sync privately to this device.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: ring.connected && !ring.syncing
-                    ? ring.syncHistory
-                    : null,
-                icon: Icon(ring.syncing ? Icons.sync : Icons.download_rounded),
-                label: Text(ring.syncing ? 'Syncing ring…' : 'Sync now'),
               ),
             ],
           ),
@@ -575,6 +636,13 @@ class _RingScreen extends StatelessWidget {
   const _RingScreen(this.ring);
   final RingController ring;
 
+  String _cellHealthLabel(int mv) {
+    final volts = (mv / 1000.0).toStringAsFixed(2);
+    if (mv >= 3800) return 'Healthy · $volts V';
+    if (mv >= 3550) return 'Good · $volts V';
+    return 'Low · $volts V';
+  }
+
   @override
   Widget build(BuildContext context) {
     final drain = ring.drain;
@@ -584,16 +652,16 @@ class _RingScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeading('Health Sync'),
+        const _SectionHeading('Automatic Health Sync'),
         _Panel(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('Auto-sync when ring connects'),
+                title: const Text('Auto-sync HRV, sleep & health data'),
                 subtitle: const Text(
-                  'Automatically fetches new sleep, HRV & skin temperature every 30 min',
+                  'Automatically downloads new HRV, sleep, heart rate & skin temperature when connected',
                 ),
                 value: ring.autoSyncHistory,
                 onChanged: (v) => unawaited(ring.setAutoSyncHistory(v)),
@@ -688,7 +756,7 @@ class _RingScreen extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 24),
-        const _SectionHeading('Battery Health'),
+        const _SectionHeading('Battery & Lifespan'),
         StreamBuilder<List<TelemetrySnapshot>>(
           stream: ring.batteryHistory,
           builder: (context, snapshot) {
@@ -718,8 +786,10 @@ class _RingScreen extends StatelessWidget {
                 _batteryChart(
                   context,
                   samples,
-                  title: 'Cell health (voltage)',
-                  reading: '${last.batteryMillivolts} mV',
+                  title: 'Battery cell condition',
+                  reading: _cellHealthLabel(last.batteryMillivolts),
+                  subtitle:
+                      'Tracks long-term lithium battery health over charge cycles.',
                   value: (row) => row.batteryMillivolts,
                   color: colors.secondary,
                 ),
@@ -728,7 +798,7 @@ class _RingScreen extends StatelessWidget {
           },
         ),
         const SizedBox(height: 24),
-        const _SectionHeading('On-Ring Tracking'),
+        const _SectionHeading('On-Ring Battery Savers'),
         _PowerMonitorsPanel(ring),
       ],
     );
@@ -739,18 +809,28 @@ class _RingScreen extends StatelessWidget {
     List<TelemetrySnapshot> samples, {
     required String title,
     required String reading,
+    String? subtitle,
     required int Function(TelemetrySnapshot) value,
     required Color color,
   }) {
     final layout = MaterialLocalizations.of(context);
     final first = samples.first.capturedAt.toLocal();
     final last = samples.last.capturedAt.toLocal();
+    final theme = Theme.of(context);
     return _Panel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: Theme.of(context).textTheme.titleMedium),
-          Text(reading, style: Theme.of(context).textTheme.headlineLarge),
+          Text(title, style: theme.textTheme.titleMedium),
+          if (subtitle != null)
+            Text(
+              subtitle,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          const SizedBox(height: 2),
+          Text(reading, style: theme.textTheme.headlineLarge),
           const SizedBox(height: 8),
           Sparkline(
             points: [
@@ -768,8 +848,8 @@ class _RingScreen extends StatelessWidget {
             samples.length == 1
                 ? 'Last reading ${layout.formatShortDate(last)}, ${layout.formatTimeOfDay(TimeOfDay.fromDateTime(last))}'
                 : '${samples.length} readings · ${layout.formatShortDate(first)} – ${layout.formatShortDate(last)}',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
         ],
@@ -797,20 +877,20 @@ class _PowerMonitorsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final busy = ring.pendingParam != null;
     final canEdit = ring.canSendCommands && !busy;
+    final theme = Theme.of(context);
     return _Panel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!ring.connected)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Text(
-                'Connect your ring to manage on-ring background tracking.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
+          Text(
+            ring.connected
+                ? "Turn off background tracking you don't need to extend your ring's battery life."
+                : 'Connect your ring to manage on-ring background tracking.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
             ),
+          ),
+          const SizedBox(height: 8),
           _paramToggle(
             title: 'Automatic workout detection',
             subtitle: 'Detects walks, runs, and workouts on the ring',
@@ -860,128 +940,6 @@ class _PowerMonitorsPanel extends StatelessWidget {
     value: value,
     onChanged: enabled ? onChanged : null,
   );
-}
-
-class _DiagnosticsDrawer extends StatefulWidget {
-  const _DiagnosticsDrawer();
-
-  @override
-  State<_DiagnosticsDrawer> createState() => _DiagnosticsDrawerState();
-}
-
-class _DiagnosticsDrawerState extends State<_DiagnosticsDrawer> {
-  bool exporting = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final ring = context.watch<RingController>();
-    return Drawer(
-      child: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Diagnostics',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                ),
-                IconButton(
-                  onPressed: () => Navigator.pop(context),
-                  tooltip: 'Close diagnostics',
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (ring.firmware case final firmware?)
-              _Metric('Firmware', firmware),
-            if (ring.writeLimit case final limit?)
-              _Metric('ATT write limit', '$limit bytes'),
-            if (ring.bond case final bond?) _Metric('Bluetooth bond', bond),
-            if (ring.authStatus case final auth?) ...[
-              _Metric('Eco mode', '${auth.ecoMode}'),
-              _Metric('Auto-sports', auth.sportsMonitor ? 'On' : 'Off'),
-              _Metric('Ring MTU', '${auth.mtu} bytes'),
-            ],
-            if (ring.connected)
-              _Metric(
-                'Bytes skipped by decoder',
-                ring.discardedBytes.toString(),
-              ),
-            const Divider(height: 32),
-            OutlinedButton.icon(
-              onPressed: ring.connected && !ring.syncing
-                  ? ring.forceStopModes
-                  : null,
-              icon: const Icon(Icons.stop_circle_outlined),
-              label: const Text('Force-stop modes'),
-            ),
-            const SizedBox(height: 8),
-            Builder(
-              builder: (buttonContext) => OutlinedButton.icon(
-                onPressed: exporting
-                    ? null
-                    : () => _export(buttonContext, ring),
-                icon: const Icon(Icons.ios_share),
-                label: Text(
-                  exporting ? 'Preparing trace…' : 'Export raw trace',
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'The latest connection trace may include health readings.',
-            ),
-            const SizedBox(height: 16),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.terminal),
-              label: const Text('Command console'),
-              onPressed: () {
-                final navigator = Navigator.of(context);
-                Scaffold.of(context).closeEndDrawer();
-                navigator.push<void>(
-                  MaterialPageRoute(builder: (_) => CommandConsoleScreen(ring)),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _export(BuildContext context, RingController ring) async {
-    final box = context.findRenderObject() as RenderBox;
-    final origin = box.localToGlobal(Offset.zero) & box.size;
-    setState(() => exporting = true);
-    try {
-      final trace = await ring.exportTrace();
-      if (!context.mounted) return;
-      if (trace == null) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('No trace captured yet.')));
-      } else {
-        await SharePlus.instance.share(
-          ShareParams(
-            files: [XFile(trace.path, mimeType: 'application/x-ndjson')],
-            sharePositionOrigin: origin,
-          ),
-        );
-      }
-    } catch (error) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not export trace. $error')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => exporting = false);
-    }
-  }
 }
 
 class _StatusPill extends StatelessWidget {

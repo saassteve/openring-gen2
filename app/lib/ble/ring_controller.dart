@@ -67,7 +67,7 @@ final class RingController extends ChangeNotifier {
         autoHealthExport = await database.getAutoHealthExport();
         autoConnect = (await database.getPreference(_autoConnectKey)) != 'false';
         autoSyncHistory =
-            (await database.getPreference(_autoSyncHistoryKey)) == 'true';
+            (await database.getPreference(_autoSyncHistoryKey)) != 'false';
         final lastSyncMs = int.tryParse(
           await database.getPreference(_lastAutoSyncMsKey) ?? '',
         );
@@ -172,7 +172,8 @@ final class RingController extends ChangeNotifier {
   bool _dozePausedThisStreak = false;
   DateTime? _lastBiometricBroadcastAt;
   bool autoConnect = true;
-  bool autoSyncHistory = false;
+  bool autoSyncHistory = true;
+  int syncCompletedCount = 0;
   NearbyRing? _lastKnownRing;
   bool _pendingTileToggle = false;
   bool _userDisconnected = false;
@@ -1015,6 +1016,7 @@ final class RingController extends ChangeNotifier {
     }
     if (phase == DrainPhase.complete || phase == DrainPhase.partial) {
       _lastAutoSyncAt = DateTime.now();
+      syncCompletedCount++;
       await database.setPreference(
         _lastAutoSyncMsKey,
         _lastAutoSyncAt!.millisecondsSinceEpoch.toString(),
