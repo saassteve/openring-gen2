@@ -20,7 +20,7 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <application
-        android:label="Ring Companion"
+        android:label="RingPilot"
         android:allowBackup="false"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
@@ -73,7 +73,7 @@
             android:name=".RingQuickTileService"
             android:exported="true"
             android:icon="@mipmap/ic_launcher"
-            android:label="Ring Control"
+            android:label="RingPilot"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
@@ -82,7 +82,7 @@
         <service
             android:name=".RingAccessibilityService"
             android:exported="false"
-            android:label="Ring Companion Gestures"
+            android:label="RingPilot Gestures"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="accessibility_service_description">Optional hands-free control for Ring Companion: lets smart-ring finger gestures scroll, turn pages, navigate back, or take a screenshot in any app. Ring Companion never reads screen content.</string>
+    <string name="accessibility_service_description">Optional hands-free control for RingPilot: lets smart-ring gestures snap photos, scroll feeds, turn pages, navigate back, or take a screenshot. RingPilot never reads screen content.</string>
 </resources>

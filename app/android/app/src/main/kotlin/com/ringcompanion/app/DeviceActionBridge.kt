@@ -137,7 +137,7 @@ internal class DeviceActionBridge(
             }
             "notifyAlert" -> {
                 val id = call.argument<Int>("id") ?: 7110
-                val title = call.argument<String>("title") ?: "Ring Companion"
+                val title = call.argument<String>("title") ?: "RingPilot"
                 val body = call.argument<String>("body") ?: ""
                 showAlertNotification(id, title, body)
                 result.success(true)
@@ -304,7 +304,7 @@ internal class DeviceActionBridge(
                     result.success(
                         mapOf(
                             "ok" to false,
-                            "detail" to "Enable Ring Companion in Android Accessibility settings",
+                            "detail" to "Enable RingPilot in Android Accessibility settings",
                         ),
                     )
                     return
@@ -410,7 +410,7 @@ internal class DeviceActionBridge(
         ) {
             val channel = NotificationChannel(
                 ALERTS_CHANNEL_ID,
-                "Ring Smart Alerts",
+                "RingPilot Alerts",
                 NotificationManager.IMPORTANCE_DEFAULT,
             )
             manager.createNotificationChannel(channel)
@@ -509,7 +509,7 @@ internal class DeviceActionBridge(
         ) {
             val channel = NotificationChannel(
                 ALERTS_CHANNEL_ID,
-                "Ring Smart Alerts",
+                "RingPilot Alerts",
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = "Reminders when your ring is left off, low battery before sleep, or stress/HRV cues."

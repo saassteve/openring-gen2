@@ -1,13 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../ble/ring_controller.dart';
 import '../data/health_exporter.dart';
 import '../data/health_metric.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen(this.exporter, {super.key});
+  const SettingsScreen(this.exporter, {this.ring, super.key});
 
   final HealthExporter exporter;
+  final RingController? ring;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -33,94 +37,155 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Settings')),
-    body: SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-            child: Text(
-              'Health Connect (Android)',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ),
-          if (!HealthExporter.supportedPlatform)
-            const Card(
-              child: ListTile(
-                leading: Icon(Icons.info_outline),
-                title: Text('Android only'),
-                subtitle: Text(
-                  'Automatic Health Connect export is available on Android. '
-                  'On iOS, ring history is stored locally in SQLite and can be '
-                  'shared from Diagnostics.',
+  Widget build(BuildContext context) {
+    final ring = widget.ring;
+    final theme = Theme.of(context);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Settings')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            if (ring != null)
+              ListenableBuilder(
+                listenable: ring,
+                builder: (context, _) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+                      child: Text(
+                        'Automation',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    Card(
+                      child: Column(
+                        children: [
+                          SwitchListTile(
+                            secondary: const Icon(Icons.bluetooth_connected),
+                            title: const Text('Auto-connect on launch'),
+                            subtitle: const Text(
+                              'Automatically reconnects to your ring when opening the app or after brief drops.',
+                            ),
+                            value: ring.autoConnect,
+                            onChanged: (v) => unawaited(ring.setAutoConnect(v)),
+                          ),
+                          const Divider(height: 1),
+                          SwitchListTile(
+                            secondary: const Icon(Icons.sync),
+                            title: const Text('Auto-sync health data'),
+                            subtitle: const Text(
+                              'Automatically downloads new sleep, HRV, and temperature data when connected.',
+                            ),
+                            value: ring.autoSyncHistory,
+                            onChanged: (v) =>
+                                unawaited(ring.setAutoSyncHistory(v)),
+                          ),
+                          const Divider(height: 1),
+                          SwitchListTile(
+                            secondary: const Icon(Icons.touch_app_outlined),
+                            title: const Text('Auto-enable ring gestures'),
+                            subtitle: const Text(
+                              'Arms finger taps & wrist flicks automatically as soon as your ring connects.',
+                            ),
+                            value: ring.gestureConfig.autoStartGestures,
+                            onChanged: (v) => unawaited(
+                              ring.updateGestureConfig(
+                                ring.gestureConfig.copyWith(
+                                  autoStartGestures: v,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
                 ),
               ),
-            )
-          else
-            Card(
-              child: Column(
-                children: [
-                  SwitchListTile(
-                    secondary: const Icon(Icons.autorenew),
-                    title: const Text('Auto-export after history sync'),
-                    subtitle: const Text(
-                      'Automatically writes HR, HRV, SpO₂, respiratory '
-                      'rate, steps, and skin temperature to Android Health '
-                      'Connect whenever ring history finishes syncing.',
-                    ),
-                    value: _autoExport,
-                    onChanged: _exporting ? null : _toggleAutoExport,
-                  ),
-                  const Divider(height: 1),
-                  FutureBuilder(
-                    future: _report,
-                    builder: (context, snapshot) {
-                      final report = snapshot.data;
-                      final subtitle = switch (snapshot) {
-                        _ when snapshot.hasError =>
-                          'Could not load export history.',
-                        _ when report != null => _formatReport(context, report),
-                        _ when snapshot.connectionState ==
-                            ConnectionState.waiting =>
-                          'Loading export history…',
-                        _ => 'No readings exported yet.',
-                      };
-                      return ListTile(
-                        leading: const Icon(Icons.monitor_heart_outlined),
-                        title: const Text('Sync to Health Connect now'),
-                        subtitle: Text(subtitle),
-                        onTap: !_exporting ? _export : null,
-                        trailing: _exporting
-                            ? const SizedBox.square(
-                                dimension: 24,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.sync),
-                      );
-                    },
-                  ),
-                ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+              child: Text(
+                'Health Connect (Android)',
+                style: theme.textTheme.titleMedium,
               ),
             ),
-          if (_message case final message?) ...[
-            const SizedBox(height: 12),
-            Text(message),
+            if (!HealthExporter.supportedPlatform)
+              const Card(
+                child: ListTile(
+                  leading: Icon(Icons.info_outline),
+                  title: Text('Android only'),
+                  subtitle: Text(
+                    'Automatic Health Connect export is available on Android. '
+                    'On iOS, ring history is stored locally on your device.',
+                  ),
+                ),
+              )
+            else
+              Card(
+                child: Column(
+                  children: [
+                    SwitchListTile(
+                      secondary: const Icon(Icons.autorenew),
+                      title: const Text('Auto-export after history sync'),
+                      subtitle: const Text(
+                        'Automatically saves heart rate, HRV, SpO₂, breathing, '
+                        'steps, and skin temperature to Android Health Connect.',
+                      ),
+                      value: _autoExport,
+                      onChanged: _exporting ? null : _toggleAutoExport,
+                    ),
+                    const Divider(height: 1),
+                    FutureBuilder(
+                      future: _report,
+                      builder: (context, snapshot) {
+                        final report = snapshot.data;
+                        final subtitle = switch (snapshot) {
+                          _ when snapshot.hasError =>
+                            'Could not load export history.',
+                          _ when report != null =>
+                            _formatReport(context, report),
+                          _ when snapshot.connectionState ==
+                              ConnectionState.waiting =>
+                            'Loading export history…',
+                          _ => 'No readings exported yet.',
+                        };
+                        return ListTile(
+                          leading: const Icon(Icons.monitor_heart_outlined),
+                          title: const Text('Sync to Health Connect now'),
+                          subtitle: Text(subtitle),
+                          onTap: !_exporting ? _export : null,
+                          trailing: _exporting
+                              ? const SizedBox.square(
+                                  dimension: 24,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.sync),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            if (_message case final message?) ...[
+              const SizedBox(height: 12),
+              Text(message),
+            ],
           ],
-        ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   Future<void> _toggleAutoExport(bool enabled) async {
     setState(() => _autoExport = enabled);
     await _exporter.database.setAutoHealthExport(enabled);
     if (!mounted) return;
     if (enabled) {
-      // Prompt once if permissions are not yet granted, and export any backlog.
       await _export();
     } else {
       setState(() {

@@ -79,6 +79,9 @@ internal class RingBleBridge(
     private val writes = ArrayDeque<WriteRequest>()
     private var activeWrite: WriteRequest? = null
     private var retryWriteTimer: Runnable? = null
+    private var connectRetryTimer: Runnable? = null
+    private var connectingId: String? = null
+    private var connectRetries = 0
 
     override fun onListen(arguments: Any?, eventSink: EventChannel.EventSink) {
         sink = eventSink
@@ -121,17 +124,14 @@ internal class RingBleBridge(
                         return
                     }
                     stopScan()
-                    val device = adapter.getRemoteDevice(id)
-                    if (device == null) {
-                        result.error("connect", "Bluetooth adapter unavailable", null)
+                    connectingId = id
+                    connectRetries = 0
+                    val opened = openGatt(adapter, id)
+                    if (!opened) {
+                        connectingId = null
+                        result.error("connect", "Could not start Bluetooth connection to ring", null)
                         return
                     }
-                    gatt = device.connectGatt(activity, false, callback, BluetoothDevice.TRANSPORT_LE)
-                    if (gatt == null) {
-                        result.error("connect", "Android could not open the GATT connection", null)
-                        return
-                    }
-                    arm(25_000L) { fail("Timed out connecting to the ring") }
                     result.success(null)
                 }
                 "disconnect" -> {
@@ -177,6 +177,15 @@ internal class RingBleBridge(
         } catch (error: IllegalStateException) {
             result.error("bluetooth", error.message ?: "Bluetooth is unavailable", null)
         }
+    }
+
+    private fun openGatt(adapter: BluetoothAdapter, id: String): Boolean {
+        val device = runCatching { adapter.getRemoteDevice(id) }.getOrNull() ?: return false
+        val link = device.connectGatt(activity, false, callback, BluetoothDevice.TRANSPORT_LE)
+            ?: return false
+        gatt = link
+        arm(20_000L) { fail("Timed out connecting to the ring — move ring closer and retry") }
+        return true
     }
 
     private fun requestScan(result: MethodChannel.Result) {
@@ -279,9 +288,35 @@ internal class RingBleBridge(
         override fun onConnectionStateChange(link: BluetoothGatt, status: Int, state: Int) =
             onLink(link) {
                 when {
-                    status != BluetoothGatt.GATT_SUCCESS -> fail("GATT connection error ($status)")
+                    status != BluetoothGatt.GATT_SUCCESS -> {
+                        val id = connectingId
+                        val transient = !ready && id != null && connectRetries < 2 &&
+                            (status == 133 || status == 8 || status == 19 || status == 22)
+                        if (transient) {
+                            connectRetries += 1
+                            disarm()
+                            gatt = null
+                            runCatching { link.close() }
+                            val adapter = manager?.adapter
+                            if (adapter != null && adapter.isEnabled) {
+                                connectRetryTimer?.let(main::removeCallbacks)
+                                connectRetryTimer = Runnable {
+                                    connectRetryTimer = null
+                                    if (gatt == null && connectingId == id) {
+                                        if (!openGatt(adapter, id)) {
+                                            fail("Could not reconnect to ring")
+                                        }
+                                    }
+                                }.also { main.postDelayed(it, 350L) }
+                                return@onLink
+                            }
+                        }
+                        fail("Bluetooth connection interrupted ($status) — tap Reconnect")
+                    }
                     state == BluetoothProfile.STATE_DISCONNECTED -> closeConnection("Ring disconnected")
                     state == BluetoothProfile.STATE_CONNECTED -> {
+                        // Speed up service discovery, MTU, auth, and history sync (~3x faster).
+                        runCatching { link.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
                         arm(ATT_TIMEOUT) { fail("Service discovery timed out") }
                         if (!link.discoverServices()) fail("Could not start service discovery")
                     }
@@ -522,7 +557,7 @@ internal class RingBleBridge(
                 BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
             )
             if (code == BluetoothStatusCodes.SUCCESS) return
-            if (code == BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY && request.retries < 10) {
+            if (code == BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY && request.retries < 12) {
                 disarm()
                 activeWrite = null
                 request.retries += 1
@@ -530,7 +565,7 @@ internal class RingBleBridge(
                 retryWriteTimer = Runnable {
                     retryWriteTimer = null
                     pumpWrites()
-                }.also { main.postDelayed(it, 120L) }
+                }.also { main.postDelayed(it, 80L) }
                 return
             }
             if (code == BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY) {
@@ -555,7 +590,7 @@ internal class RingBleBridge(
                 retryWriteTimer = Runnable {
                     retryWriteTimer = null
                     pumpWrites()
-                }.also { main.postDelayed(it, 120L) }
+                }.also { main.postDelayed(it, 80L) }
                 return
             }
             fail("Could not queue the GATT write — close or force-stop any other ring app and retry")
@@ -585,6 +620,10 @@ internal class RingBleBridge(
         disarm()
         retryWriteTimer?.let(main::removeCallbacks)
         retryWriteTimer = null
+        connectRetryTimer?.let(main::removeCallbacks)
+        connectRetryTimer = null
+        connectingId = null
+        connectRetries = 0
         val link = gatt
         gatt = null
         writeChar = null

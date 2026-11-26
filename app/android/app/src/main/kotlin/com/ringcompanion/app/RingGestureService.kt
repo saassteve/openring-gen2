@@ -59,7 +59,7 @@ class RingGestureService : Service() {
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Ring Gesture Control",
+            "RingPilot Gestures",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "Keeps smart-ring gesture control active across apps and when the screen is off."
@@ -92,7 +92,7 @@ class RingGestureService : Service() {
             Notification.Builder(this)
         }
         return builder
-            .setContentTitle("Ring Gesture Control Active")
+            .setContentTitle("RingPilot Active")
             .setContentText(summary)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)

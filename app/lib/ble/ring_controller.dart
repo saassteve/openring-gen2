@@ -26,6 +26,20 @@ enum LinkState {
 typedef NearbyRing = ({String id, String name, int rssi, String? source});
 typedef HeartRatePoint = ({DateTime time, int bpm});
 
+/// Strips vendor prefixes from raw BLE names for a clean, brand-neutral UI label.
+String friendlyRingName(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return 'Smart Ring';
+  final cleaned = raw.trim();
+  final match = RegExp(r'[-_\s]([0-9A-Fa-f]{4,6})$').firstMatch(cleaned);
+  if (match != null) {
+    return 'Smart Ring • ${match.group(1)!.toUpperCase()}';
+  }
+  if (cleaned.toLowerCase().contains('ring')) {
+    return 'Smart Ring';
+  }
+  return cleaned;
+}
+
 final class RingController extends ChangeNotifier {
   RingController(
     this.database, {
@@ -52,6 +66,14 @@ final class RingController extends ChangeNotifier {
       _enqueue(() async {
         autoHealthExport = await database.getAutoHealthExport();
         autoConnect = (await database.getPreference(_autoConnectKey)) != 'false';
+        autoSyncHistory =
+            (await database.getPreference(_autoSyncHistoryKey)) == 'true';
+        final lastSyncMs = int.tryParse(
+          await database.getPreference(_lastAutoSyncMsKey) ?? '',
+        );
+        if (lastSyncMs != null) {
+          _lastAutoSyncAt = DateTime.fromMillisecondsSinceEpoch(lastSyncMs);
+        }
         gestureConfig = GestureActionConfig.decode(
           await database.getPreference(_gestureConfigKey),
         );
@@ -86,6 +108,8 @@ final class RingController extends ChangeNotifier {
   static const _gestureConfigKey = 'gesture_action_config';
   static const _smartConfigKey = 'smart_automations_config';
   static const _autoConnectKey = 'auto_connect_ring';
+  static const _autoSyncHistoryKey = 'auto_sync_history';
+  static const _lastAutoSyncMsKey = 'last_auto_sync_ms';
   static const _ringOffAlertId = 7111;
   static const _lowBatteryAlertId = 7112;
 
@@ -148,22 +172,82 @@ final class RingController extends ChangeNotifier {
   bool _dozePausedThisStreak = false;
   DateTime? _lastBiometricBroadcastAt;
   bool autoConnect = true;
+  bool autoSyncHistory = false;
   NearbyRing? _lastKnownRing;
   bool _pendingTileToggle = false;
+  bool _userDisconnected = false;
+  bool _resumeGesturesAfterSync = false;
+  DateTime? _lastAutoSyncAt;
+  Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
+
+  String get displayRingName => friendlyRingName(name);
 
   bool get canReconnect =>
       _lastKnownRing != null && state == LinkState.disconnected;
 
+  bool get reconnecting => _reconnectTimer != null;
+
   Future<void> setAutoConnect(bool enabled) async {
     autoConnect = enabled;
     await database.setPreference(_autoConnectKey, enabled ? 'true' : 'false');
+    if (!enabled) {
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _reconnectAttempts = 0;
+    }
+    _publish();
+  }
+
+  Future<void> setAutoSyncHistory(bool enabled) async {
+    autoSyncHistory = enabled;
+    await database.setPreference(
+      _autoSyncHistoryKey,
+      enabled ? 'true' : 'false',
+    );
     _publish();
   }
 
   Future<void> reconnect() async {
     final ring = _lastKnownRing;
     if (ring == null || state != LinkState.disconnected) return;
+    _userDisconnected = false;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectAttempts = 0;
     await connect(ring);
+  }
+
+  void onAppResumed() {
+    if (_disposed || !autoConnect || _userDisconnected) return;
+    if (state == LinkState.disconnected && _lastKnownRing != null) {
+      _reconnectAttempts = 0;
+      unawaited(_autoConnectRemembered());
+    }
+  }
+
+  void _scheduleReconnect() {
+    if (_disposed ||
+        !autoConnect ||
+        _userDisconnected ||
+        _lastKnownRing == null ||
+        state != LinkState.disconnected ||
+        _reconnectAttempts >= 4) {
+      return;
+    }
+    const delays = [2, 5, 10, 20];
+    final delaySecs = delays[_reconnectAttempts.clamp(0, delays.length - 1)];
+    _reconnectAttempts++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(Duration(seconds: delaySecs), () {
+      _reconnectTimer = null;
+      if (!_disposed &&
+          autoConnect &&
+          !_userDisconnected &&
+          state == LinkState.disconnected) {
+        unawaited(_autoConnectRemembered());
+      }
+    });
   }
 
   Future<void> _autoConnectRemembered() => _enqueue(() async {
@@ -429,7 +513,11 @@ final class RingController extends ChangeNotifier {
 
   Future<void> connect(NearbyRing ring) => _enqueue(() async {
     if (state != LinkState.scanning && state != LinkState.disconnected) return;
+    _userDisconnected = false;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     _selected = ring;
+    _lastKnownRing = ring;
     message = null;
     telemetry = null;
     drain = null;
@@ -441,6 +529,10 @@ final class RingController extends ChangeNotifier {
   });
 
   Future<void> disconnect() => _enqueue(() async {
+    _userDisconnected = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectAttempts = 0;
     if (_selected == null) return;
     try {
       if (connected && !syncing && (mode != RingMode.idle || accStreaming)) {
@@ -576,6 +668,7 @@ final class RingController extends ChangeNotifier {
     drain = history;
     drainDetail = null;
     _publish();
+    await _ble.setHighPriority(true);
     await _initSession();
     await _send(open);
     _watchDrain(history);
@@ -654,6 +747,7 @@ final class RingController extends ChangeNotifier {
               _resetLink();
               message ??= reason;
               await _interruptDrain(reason);
+              _scheduleReconnect();
             }
         }
       }),
@@ -725,13 +819,27 @@ final class RingController extends ChangeNotifier {
             authStatus = frame;
             paramValues[RingParam.autoSports] = frame.sportsMonitor ? 1 : 0;
             paramValues[RingParam.osaPlan] = frame.monitorPlanStatus;
+            _reconnectAttempts = 0;
+            _reconnectTimer?.cancel();
+            _reconnectTimer = null;
             state = LinkState.ready;
             _syncTileState();
             await _send(RingCommands.telemetry());
-            if (_pendingTileToggle || gestureConfig.autoStartGestures) {
+            final shouldAutoSync =
+                autoSyncHistory &&
+                !_pendingTileToggle &&
+                _commandParser == null &&
+                (_lastAutoSyncAt == null ||
+                    DateTime.now().difference(_lastAutoSyncAt!) >=
+                        const Duration(minutes: 30));
+            if (shouldAutoSync) {
+              _resumeGesturesAfterSync = gestureConfig.autoStartGestures;
+              unawaited(syncHistory());
+            } else if (_pendingTileToggle || gestureConfig.autoStartGestures) {
               _pendingTileToggle = false;
               unawaited(setAccelerometer(true));
             } else {
+              unawaited(_ble.setHighPriority(false));
               _startPolling();
             }
           }
@@ -858,7 +966,13 @@ final class RingController extends ChangeNotifier {
     );
     if (history.finished) {
       await _finishDrain(null);
-      _startPolling();
+      if (_resumeGesturesAfterSync) {
+        _resumeGesturesAfterSync = false;
+        unawaited(setAccelerometer(true));
+      } else {
+        unawaited(_ble.setHighPriority(false));
+        _startPolling();
+      }
     } else {
       _watchDrain(history);
     }
@@ -898,6 +1012,13 @@ final class RingController extends ChangeNotifier {
     if (session != null) {
       await database.closeDrain(session, drain!, detail);
       _drainSession = null;
+    }
+    if (phase == DrainPhase.complete || phase == DrainPhase.partial) {
+      _lastAutoSyncAt = DateTime.now();
+      await database.setPreference(
+        _lastAutoSyncMsKey,
+        _lastAutoSyncAt!.millisecondsSinceEpoch.toString(),
+      );
     }
     if (HealthExporter.supportedPlatform &&
         (phase == DrainPhase.complete || phase == DrainPhase.partial) &&
@@ -1279,7 +1400,7 @@ final class RingController extends ChangeNotifier {
     final connection = await database.latestTraceConnection();
     if (connection == null) return null;
     final directory = await getTemporaryDirectory();
-    final file = File('${directory.path}/ringconn-$connection.jsonl');
+    final file = File('${directory.path}/ringpilot-$connection.jsonl');
     final output = file.openWrite();
     try {
       await for (final packet in database.tracePackets(connection)) {
@@ -1306,6 +1427,8 @@ final class RingController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     _resetLink();
     deviceActions.dispose();
     unawaited(_subscription.cancel());

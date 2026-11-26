@@ -9,7 +9,15 @@ import 'package:ringconn_companion/data/ring_database.dart';
 import 'package:ringconn_companion/ui/companion_screen.dart';
 
 void main() {
-  testWidgets('live, history, battery and diagnostics fit a narrow phone', (
+  test('friendlyRingName strips vendor names into clean consumer labels', () {
+    expect(friendlyRingName(null), 'Smart Ring');
+    expect(friendlyRingName(''), 'Smart Ring');
+    expect(friendlyRingName('RingConn Gen2-03ad'), 'Smart Ring • 03AD');
+    expect(friendlyRingName('RingConn Gen2'), 'Smart Ring');
+    expect(friendlyRingName('My Titan Ring'), 'Smart Ring');
+  });
+
+  testWidgets('Home, Control, Wellness, Ring and Diagnostics fit a narrow phone', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -29,30 +37,32 @@ void main() {
         child: const MaterialApp(home: CompanionScreen()),
       ),
     );
-    expect(find.text('Disconnected'), findsOneWidget);
+    expect(find.text('RingPilot'), findsOneWidget);
+    expect(find.text('Smart Ring'), findsOneWidget);
+    expect(find.text('Not connected'), findsOneWidget);
+    expect(find.text('Ring Gestures'), findsOneWidget);
     expect(find.text('Live heart rate'), findsOneWidget);
+    expect(find.textContaining('RingConn'), findsNothing);
 
-    await tester.tap(find.text('History'));
+    await tester.tap(find.text('Control'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Sync the official app first'), findsOneWidget);
+    expect(find.text('Ring Control'), findsOneWidget);
+    expect(find.text('Hands-Free Automations'), findsOneWidget);
+    expect(find.text('Music & Podcasts'), findsOneWidget);
+    expect(find.text('Find Phone & Torch'), findsOneWidget);
 
-    await tester.tap(find.text('Battery'));
+    await tester.tap(find.text('Wellness'));
     await tester.pumpAndSettle();
-    expect(
-      find.text('Battery readings appear after the ring connects.'),
-      findsOneWidget,
-    );
-    expect(find.text('Power & background monitors'), findsOneWidget);
-    expect(find.text('Auto-sports monitor'), findsOneWidget);
+    expect(find.text('Guided Breathing & HRV'), findsOneWidget);
+    expect(find.text('Temperature Balance'), findsOneWidget);
+    expect(find.text('Light & Recovery Insights'), findsOneWidget);
 
-    await tester.tap(find.text('Sensors'));
+    await tester.tap(find.text('Ring'));
     await tester.pumpAndSettle();
-    expect(find.text('Always-On Ring Automations'), findsOneWidget);
-    expect(find.text('PPG Biofeedback & Breathing'), findsOneWidget);
-    expect(find.text('25 Hz Motion & Finger Gestures'), findsOneWidget);
-    expect(find.text('System-Wide Device Control'), findsOneWidget);
-    expect(find.text('Dual-NTC Thermal Gradient'), findsOneWidget);
-    expect(find.text('Hidden History: Light, Thermal & HRV'), findsOneWidget);
+    expect(find.text('Health Sync'), findsOneWidget);
+    expect(find.text('Battery Health'), findsOneWidget);
+    expect(find.text('On-Ring Tracking'), findsOneWidget);
+    expect(find.text('Automatic workout detection'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Diagnostics'));
     await tester.pumpAndSettle();
@@ -73,12 +83,19 @@ void main() {
 
     await tester.tap(find.byTooltip('Settings'));
     await tester.pumpAndSettle();
+    expect(find.text('Automation'), findsOneWidget);
+    expect(find.text('Auto-connect on launch'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Android only'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('Health Connect (Android)'), findsOneWidget);
     expect(find.text('Android only'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('Android UI exposes auto-export switch and History status', (
+  testWidgets('Android UI exposes Health Connect auto-export on Home and Settings', (
     tester,
   ) async {
     HealthExporter.supportedPlatformOverride = true;
@@ -97,8 +114,6 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('History'));
-    await tester.pumpAndSettle();
     expect(
       find.text('Auto-export to Android Health Connect is on.'),
       findsOneWidget,

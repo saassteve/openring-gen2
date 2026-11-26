@@ -66,7 +66,7 @@ class RingQuickTileService : TileService() {
 
     private fun refreshTile() {
         val tile = qsTile ?: return
-        tile.label = "Ring Control"
+        tile.label = "RingPilot"
         tile.state = when {
             gesturesActive -> Tile.STATE_ACTIVE
             else -> Tile.STATE_INACTIVE
